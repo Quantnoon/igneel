@@ -1,0 +1,9 @@
+{
+  "symbol": "Volatility 10 (1s) Index",
+  "date_range": "3D",
+  "strategy": "trendline-trading-strategy",
+  "magic": 1122,
+  "comment": "forex-agent",
+  "poll_seconds": 60,
+  "decision_log": "agent_decisions.jsonl"
+}

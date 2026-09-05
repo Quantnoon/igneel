@@ -1,0 +1,16 @@
+!requirements.txt
+.pytest_cache
+.kilo
+.sqlite3
+webview/node_modules/
+webview/dist/
+webview/df.csv
+webview/config.json
+agent/large_tool_results
+agent_decisions.jsonl
+webview/strategies
+live_config.py
+.env
+*.sqlite3
+.venv
+__pycache__
