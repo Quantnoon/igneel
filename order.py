@@ -401,9 +401,9 @@ def atr_step_trailing(
     side,
     entry_tf,
     atr_period=14,
-    atr_multiplier=1.5,
-    step_multiplier=0.5,
-    activation_multiplier=2.0,
+    atr_multiplier=2.5,
+    step_multiplier=1.0,
+    activation_multiplier=3.0,
 ):
     """
     ATR + step trailing stop for an MT5 position.

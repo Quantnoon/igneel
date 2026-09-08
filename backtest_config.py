@@ -1,4 +1,16 @@
 from backtest_strategies import sr_entry, sr_exit, session_breakout_entry, session_breakout_exit
+from dotenv import load_dotenv
+from pathlib import Path
+import os
+
+load_dotenv(Path(__file__).with_name(".env"))
+
+backtest_auth = {
+    "login": int(os.environ["EXNESS_LOGIN"]),
+    "password": os.environ["EXNESS_PASSWORD"],
+    "server": os.environ["EXNESS_SERVER"],
+    "path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe",
+}
 
 _indicators = [
     #     {
@@ -56,11 +68,11 @@ _indicators = [
 
 strategies = [
     # {
-    #     "symbols": ["EURUSDm", "BTCUSDm", "GBPUSDm", "USDJPYm", "USDCADm", "AUDUSDm"],
+    #     "symbols": ["EURUSDc", "BTCUSDc", "GBPUSDc", "USDJPYc", "USDCADc", "AUDUSDc"],
     #     "name": "support_resistance",
     #     "indicators": _indicators,
     #     "timeframes": ["H4", "M15"],
-    #     "date_range": "4M",
+    #     "date_range": "1W",
     #     "strategy": ("support_resistance", sr_entry, sr_exit),
     #     "config": {
     #         "default_config": {
@@ -71,10 +83,10 @@ strategies = [
     #             "slippage": 2.5
     #         },
     #         "risk_config": {
-    #             "starting_balance":      100,
+    #             "starting_balance":      50,
     #             "currency":              "USD",   # or "NGN"
     #             "ngn_conversion_rate":   1450,
-    #             "lot_size":              0.01,
+    #             "lot_size":              0.5,
     #             "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
     #             "daily_dd": 0.05, # in percentage
     #             "maximum_dd": 0.7, # in percentage
@@ -83,7 +95,7 @@ strategies = [
     #     }
     # },
     {
-        "symbols": ["EURUSDc", "BTCUSDc", "GBPUSDc", "USDJPYc", "USDCADc", "AUDUSDc"],
+        "symbols": ["EURUSDc", "GBPUSDc", "USDJPYc", "USDCADc", "AUDUSDc"],
         "name": "sessions_breakout",
         "indicators": [
             # {"indicator": "EMA", "timeframe": "H4", "params": {"timeperiod": 50}, "outputs": ["ema_50"]},
@@ -100,18 +112,18 @@ strategies = [
             {"indicator": "ASIAN_LOW", "timeframe": "M15"},
         ],
         "timeframes": ["M15"],
-        "date_range": "1M",
+        "date_range": "2M",
         "strategy": ("sessions_breakout", session_breakout_entry, session_breakout_exit),
         "config": {
             "default_config": {
                 "sl_type": "custom",
                 "atr_multiplier": 1.5,
-                "rrr": 3,
+                "rrr": 1.5,
                 "entry_tf": "M15",
                 "slippage": 2.5
             },
             "risk_config": {
-                "starting_balance":      100,
+                "starting_balance":      10,
                 "currency":              "USD",   # or "NGN"
                 "ngn_conversion_rate":   1450,
                 "lot_size":              0.01,

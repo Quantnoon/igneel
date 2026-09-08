@@ -5,10 +5,17 @@ import math
 import re
 from typing import Any, Dict, List, Optional, Tuple
 import MetaTrader5 as mt5
+import pandas as pd
 
 from account import Account
 from order import close_all_order, open_orders
+from database import Database
+from quantnoon_signal import SignalSender, SignalRecorder
+from pathlib import Path
+import os
+from dotenv import load_dotenv
 
+load_dotenv(Path(__file__).with_name(".env"))
 
 SESSION_WINDOWS = {
     "asia": (0, 9),
@@ -159,36 +166,41 @@ def can_trade(bot_config: dict) -> Dict[str, str]:
     account = Account()
     account_info_dict = mt5.account_info()._asdict()
 
-    if account_info_dict["balance"] > account.get_account_info()["current_balance"]:
-        account.update_balance(account_info_dict["balance"])
+    date_str = account.get_account_info()["date"]
 
-    if account_info_dict["balance"] < account.get_account_info()["current_balance"] or account_info_dict["equity"] < account.get_account_info()["current_balance"]:
-        account.update_balance(account_info_dict["balance"])
+    date_obj = datetime.strptime(date_str, "%d/%m/%Y").date()
+    today = datetime.now().date()
+
+    if today > date_obj:
+        account.update_account(
+            account_info_dict["balance"],
+            bot_config["daily_dd"],
+            bot_config["maximum_dd"]
+        )
+
+    if account_info_dict["balance"] > account.get_account_info()["current_balance"]:
+        account.update_balance(
+            account_info_dict["balance"],
+            bot_config["daily_dd"],
+            bot_config["maximum_dd"]
+        )
 
     reasons = []
-    balances, account_error = _load_account()
-    if account_error:
-        reasons.append(account_error)
+    if  account_info_dict["equity"] <= account.get_account_info()["maximum_drawdown"]:
+        reasons.append("Account has reached maximum drawdown")
+        close_all_order()
+
+    if account_info_dict["equity"] <= account.get_account_info()["maximum_drawdown"]:
+        reasons.append("Account has reached daily drawdown")
+        # close_all_order()
 
     if not _session_active(config["trading_sessions"], _utc_now()):
         reasons.append("Trading session is not active.")
 
-    # if balances is not None:
-    #     starting_balance, current_balance = balances
-    #     drawdown = (starting_balance - current_balance) / starting_balance
-    #     daily_limit_reached = drawdown >= config["daily_dd"]
-    #     maximum_limit_reached = drawdown >= config["maximum_dd"]
-    #     if daily_limit_reached:
-    #         reasons.append("Daily drawdown limit reached (%.2f%%)." % (config["daily_dd"] * 100))
-    #     if maximum_limit_reached:
-    #         reasons.append("Maximum drawdown limit reached (%.2f%%)." % (config["maximum_dd"] * 100))
-    #     if daily_limit_reached or maximum_limit_reached:
-    #         try:
-    #             close_result = close_all_order()
-    #         except Exception:
-    #             close_result = None
-    #         if not isinstance(close_result, dict) or close_result.get("success") is not True:
-    #             reasons.append("Unable to close all orders and positions after drawdown limit reached.")
+    dt = datetime.now()
+
+    if not bot_config["is_weekend_trading"] and (dt.weekday() == 5 or dt.weekday() == 6):
+        reasons.append("Weekend trading is not allowed.")
 
     if not config["allow_many_trades"]:
         order_reason = _open_trade_reason(config["symbol"])
@@ -198,3 +210,95 @@ def can_trade(bot_config: dict) -> Dict[str, str]:
     if reasons:
         return _blocked(reasons)
     return {"status": "can_trade", "reason": "Trading is allowed."}
+
+_db = Database()
+
+def quantnoon_signal_provider(
+    signal: dict,
+    symbol: str,
+    identifier: str,
+    signal_name: str,
+    trade_date: datetime,
+    df: pd.DataFrame,
+    entry_tf: str,
+    exit_signal: function,
+):
+    if os.environ["QUANTNOON_SIGNAL"] == "true":
+        _Qsender = SignalSender()
+        _Qrecord = SignalRecorder()
+        sent_signal = _db.get_row(f"{identifier}", "symbol", symbol)["data"]
+
+        if sent_signal is None:
+            if signal["pos"] is not None:
+                _Qsender.send_signal_webhook(
+                    identifier=identifier,
+                    signal_name=signal_name,
+                    signal_type=signal["pos"],
+                    sl=signal["sl"],
+                    tps=[signal["tp"] if signal["tp"] else "custom"],
+                    symbol=symbol,
+                )
+
+                record_signal = {
+                    "id": identifier,
+                    "algo_name": identifier,
+                    "trade_date": trade_date.strftime('%d/%m/%Y, %H:%M:%S'),
+                    "sl": signal["sl"],
+                    "op": signal["open_price"],
+                    "tp": signal["tp"],
+                    "position": signal["pos"],
+                    "exit_date": None,
+                    "gain": 0,
+                    "symbol": symbol
+                }
+
+                _db.create_table(f"{identifier}", record_signal)
+                _db.add_to_table(f"{identifier}", record_signal)
+        else:
+            target_time = pd.to_datetime(sent_signal["trade_date"], utc=True, format="%d/%m/%Y, %H:%M:%S")
+            start_index = df.index[df["time"] >= target_time][0]
+            update_record = sent_signal
+
+            for i in range(start_index, len(df)):
+                row = df.iloc[i]
+                if sent_signal["sl"] is not None:
+                    has_hit_sl = sent_signal["sl"] >= row[f"low_{entry_tf}"] if sent_signal["position"] == "buy" else sent_signal["sl"] <= row[f"high_{entry_tf}"]
+
+                    if has_hit_sl:    
+                        update_record["exit_date"] = row["time"].strftime('%d/%m/%Y, %H:%M:%S')
+                        update_record["gain"] = update_record["sl"] - update_record["op"] if update_record["position"] == "buy" else update_record["op"] - update_record["sl"]
+                        break
+
+                if sent_signal["tp"] is not None:
+                    has_hit_tp = sent_signal["tp"] <= row[f"high_{entry_tf}"] if sent_signal["position"] == "buy" else sent_signal["tp"] >= row[f"low_{entry_tf}"]
+
+                    if has_hit_tp:
+                        update_record["exit_date"] = row["time"].strftime('%d/%m/%Y, %H:%M:%S')
+                        update_record["gain"] = update_record["tp"] - update_record["op"] if update_record["position"] == "buy" else update_record["op"] - update_record["tp"]
+                        break
+
+                else:
+                    if exit_signal is not None:
+                        has_exit_trade = exit_signal(df, i, update_record["position"])
+                        if has_exit_trade:
+                            update_record["exit_date"] = row["time"].strftime('%d/%m/%Y, %H:%M:%S')
+                            update_record["gain"] = row[f"close_{entry_tf}"] - update_record["op"] if update_record["position"] == "buy" else update_record["op"] - row[f"close_{entry_tf}"]
+                            update_record["sl"] = 0
+                            update_record["tp"] = 0
+
+            if update_record["exit_date"] is not None:
+                _Qrecord.send_record_webhook(
+                    algo_name=update_record["algo_name"],
+                    trade_date=update_record["trade_date"],
+                    sl=update_record["sl"],
+                    op=update_record["op"],
+                    tp=update_record["tp"],
+                    position=update_record["position"],
+                    exit_date=update_record["exit_date"],
+                    gain=update_record["gain"]
+                )
+                _db.delete_row(f"{identifier}", "id", f"{identifier}")
+
+            
+
+        

@@ -1,13 +1,11 @@
 from pathlib import Path
-
 from backtest_engine.main import Engine
 from backtest_tools import write_webview_resources
 from collection import PriceDataCollection
 from connection import connect
-from backtest_config import strategies
-from live_config import backtest_auth 
+from backtest_config import strategies, backtest_auth
 
-connect(backtest_auth)
+conn = connect(backtest_auth)
 
 if __name__ == "__main__":
     for strategy in strategies:
@@ -23,8 +21,6 @@ if __name__ == "__main__":
             date_range=date_range,
             indicators=indicators,
         )
-
-        
 
         engine = Engine(price_data, symbols)
 

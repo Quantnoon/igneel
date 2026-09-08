@@ -1,16 +1,20 @@
 import math
 
 def get_test_signal(df, i):
-    low = df["low_M1"].values
-    high = df["high_M1"].values
-    sma = df["sma_M1"].values
+    # low = df["low_M1"].values
+    # high = df["high_M1"].values
+    # sma = df["sma_M1"].values
 
-    if sma[i] < low[i]:
-        return "buy"
-    elif sma[i] > high[i]:
-        return "sell"
-    else:
-        return None
+    # if sma[i] < low[i]:
+    #     return "buy"
+    # elif sma[i] > high[i]:
+    #     return "sell"
+    # else:
+    #     return None
+    return "buy", None
+
+def get_test_exit_signal(df, i, pos):
+    return True
 
 def sd_entry(df, i):
     demand_low = df["demand_low_H1"].values
