@@ -117,13 +117,13 @@ strategies = [
         "config": {
             "default_config": {
                 "sl_type": "custom",
-                "atr_multiplier": 1.5,
-                "rrr": 1.5,
+                "atr_multiplier": 2.5,
+                "rrr": 2,
                 "entry_tf": "M15",
                 "slippage": 2.5
             },
             "risk_config": {
-                "starting_balance":      10,
+                "starting_balance":      30,
                 "currency":              "USD",   # or "NGN"
                 "ngn_conversion_rate":   1450,
                 "lot_size":              0.01,

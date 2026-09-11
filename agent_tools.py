@@ -4,6 +4,7 @@ import math
 import re
 import time
 from typing import Any
+from dotenv import load_dotenv
 
 from collection import PriceDataCollection
 from connection import connect
@@ -15,18 +16,22 @@ from order import (
     open_orders as _open_orders,
     place_order as _place_order,
 )
-from trade_manager import TradeExecutionGuard
 
 _SUPPORTED_TIMEFRAMES = ("M1", "M5", "M15", "H1", "H4", "D1", "W1")
 _DATE_RANGE_PATTERN = re.compile(r"^[1-9]\d*[DWMY]$", re.IGNORECASE)
+
+from pathlib import Path
+import os
+
+load_dotenv(Path(__file__).with_name(".env"))
+
 _connection_auth: dict[str, Any] | None = {
-    "login": 41180154,
-    "password": "Money_135795",
-    "server": "Deriv-Demo",
+    "login": int(os.environ["DERIV_LOGIN"]),
+    "password": os.environ["DERIV_PASSWORD"],
+    "server": os.environ["DERIV_SERVER"],
     "path": "C:\\Program Files\\MetaTrader 5\\terminal64.exe",
 }
 
-trade_execution_guard = TradeExecutionGuard()
 _compact_price_cache: dict[tuple, tuple[int, Any]] = {}
 _COMPACT_CACHE_SECONDS = 15 * 60
 
@@ -247,9 +252,6 @@ def _tool_failure(message):
 
 def place_trade(symbol: str, order_type: str, volume: float, stop_loss: float, take_profit: float):
     """Place an agent-selected, broker-valid market order with evidence-based exits."""
-    error = trade_execution_guard.placement_error(symbol)
-    if error:
-        return _tool_failure(error)
     if order_type not in ("buy", "sell"):
         return _tool_failure("order_type must be buy or sell for the continuous strategy.")
     if not all(isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 for value in (volume, stop_loss, take_profit)):
@@ -276,8 +278,7 @@ def place_trade(symbol: str, order_type: str, volume: float, stop_loss: float, t
         return _tool_failure(str(error))
     except Exception:
         return _tool_failure("Unable to validate the requested trade volume.")
-    config = trade_execution_guard.config
-    return _place_order(symbol=symbol, order_type=order_type, volume=volume, price=entry_price, sl=stop_loss, tp=take_profit, magic=config.magic, comment=config.comment)
+    return _place_order(symbol=symbol, order_type=order_type, volume=volume, price=entry_price, sl=stop_loss, tp=take_profit, magic=1122, comment="")
 
 
 def close_trade(ticket: int, target: str = "position", volume: float | None = None, deviation: int = 20, magic: int = 0, comment: str = "", type_filling: str = "return"):
@@ -309,3 +310,359 @@ def get_account_snapshot():
         return {"success": True, "data": {"balance": float(account_info.balance), "equity": float(account_info.equity), "profit": float(account_info.profit), "currency": str(account_info.currency)}, "error": None}
     except Exception as error:
         return {"success": False, "data": None, "error": {"code": None, "message": str(error) or "Unable to read MT5 account information."}}
+
+
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+LOG_FILE = Path("agent_tool_events.jsonl")
+
+SUBAGENT_NAMES = {
+    "market-analysis-agent",
+    "trade-decision-agent",
+}
+
+# task run_id -> delegated subagent
+TASK_RUNS = {}
+
+
+def json_safe(value):
+    try:
+        json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        pass
+
+    if hasattr(value, "model_dump"):
+        try:
+            return value.model_dump()
+        except Exception:
+            pass
+
+    return str(value)
+
+
+def write_jsonl(record):
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                default=str,
+            )
+            + "\n"
+        )
+
+
+def extract_task_agent(tool_input):
+    """
+    Extract delegated subagent name from DeepAgents `task` input.
+    """
+
+    if not isinstance(tool_input, dict):
+        return None
+
+    # Different DeepAgents versions may use one of these.
+    for key in (
+        "subagent_type",
+        "agent",
+        "agent_name",
+        "subagent",
+    ):
+        value = tool_input.get(key)
+
+        if value in SUBAGENT_NAMES:
+            return value
+
+    # Fallback: inspect the entire task payload.
+    text = json.dumps(
+        tool_input,
+        default=str,
+    )
+
+    for agent_name in SUBAGENT_NAMES:
+        if agent_name in text:
+            return agent_name
+
+    return None
+
+
+def get_agent_name(event):
+    metadata = event.get("metadata", {}) or {}
+
+    for key in (
+        "lc_agent_name",
+        "agent_name",
+        "subagent_name",
+    ):
+        value = metadata.get(key)
+
+        if value in SUBAGENT_NAMES:
+            return value
+
+    checkpoint_ns = str(
+        metadata.get("langgraph_checkpoint_ns", "")
+    )
+
+    for agent_name in SUBAGENT_NAMES:
+        if agent_name in checkpoint_ns:
+            return agent_name
+
+    return "main-agent"
+
+def print_agent_event(event):
+
+    event_type = event.get("event")
+    name = event.get("name", "")
+    run_id = str(event.get("run_id", ""))
+
+    agent_name = get_agent_name(event)
+
+    # =====================================================
+    # MODEL STREAM
+    # =====================================================
+
+    if event_type == "on_chat_model_stream":
+
+        chunk = event.get("data", {}).get("chunk")
+        content = getattr(chunk, "content", None)
+
+        if content:
+            print(
+                content,
+                end="",
+                flush=True,
+            )
+
+    # =====================================================
+    # TOOL START
+    # =====================================================
+
+    elif event_type == "on_tool_start":
+
+        tool_input = event.get(
+            "data",
+            {},
+        ).get("input")
+
+        # DeepAgents uses `task` to delegate to subagents.
+        if name == "task":
+
+            delegated_agent = extract_task_agent(
+                tool_input
+            )
+
+            if delegated_agent:
+                TASK_RUNS[run_id] = delegated_agent
+
+                print(
+                    f"\n\n[MAIN → {delegated_agent}]"
+                    " [SUBAGENT START]"
+                )
+
+            else:
+                print(
+                    "\n\n[main-agent]"
+                    " [SUBAGENT START] unknown"
+                )
+
+        else:
+
+            print(
+                f"\n\n[{agent_name}]"
+                f" [TOOL START] {name}"
+            )
+
+        # print(
+        #     json.dumps(
+        #         json_safe(tool_input),
+        #         indent=2,
+        #         ensure_ascii=False,
+        #         default=str,
+        #     )
+        # )
+
+        write_jsonl({
+            "timestamp": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "event": "tool_start",
+            "agent": (
+                TASK_RUNS.get(run_id)
+                if name == "task"
+                else agent_name
+            ),
+            "tool": name,
+            "run_id": run_id,
+            "input": json_safe(tool_input),
+        })
+
+    # =====================================================
+    # TOOL END
+    # =====================================================
+
+    elif event_type == "on_tool_end":
+
+        output = event.get(
+            "data",
+            {},
+        ).get("output")
+
+        if name == "task":
+
+            delegated_agent = TASK_RUNS.get(
+                run_id,
+                "unknown-subagent",
+            )
+
+            print(
+                f"\n[{delegated_agent}]"
+                " [SUBAGENT END]"
+            )
+
+        else:
+
+            delegated_agent = agent_name
+
+            print(
+                f"\n[{agent_name}]"
+                f" [TOOL END] {name}"
+            )
+
+        # print(
+        #     json.dumps(
+        #         json_safe(output),
+        #         indent=2,
+        #         ensure_ascii=False,
+        #         default=str,
+        #     )
+        # )
+
+        write_jsonl({
+            "timestamp": datetime.now(
+                timezone.utc
+            ).isoformat(),
+            "event": "tool_end",
+            "agent": delegated_agent,
+            "tool": name,
+            "run_id": run_id,
+            "output": json_safe(output),
+        })
+
+        if name == "task":
+            TASK_RUNS.pop(run_id, None)
+
+import MetaTrader5 as mt5
+
+
+TIMEFRAME_MAP = {
+    "D1": mt5.TIMEFRAME_D1,
+    "H4": mt5.TIMEFRAME_H4,
+    "H1": mt5.TIMEFRAME_H1,
+    "M15": mt5.TIMEFRAME_M15,
+    "M5": mt5.TIMEFRAME_M5,
+    "M1": mt5.TIMEFRAME_M1,
+}
+
+
+def get_latest_candle_time(
+    symbol: str,
+    timeframe: str,
+):
+    mt5_timeframe = TIMEFRAME_MAP[timeframe]
+
+    rates = mt5.copy_rates_from_pos(
+        symbol,
+        mt5_timeframe,
+        0,
+        1,
+    )
+
+    if rates is None or len(rates) == 0:
+        raise RuntimeError(
+            f"Unable to retrieve {symbol} {timeframe} candle."
+        )
+
+    return int(rates[-1]["time"])
+
+import asyncio
+from langchain_core.tools import tool
+
+
+VALID_TIMEFRAMES = {
+    "D1",
+    "H4",
+    "H1",
+    "M15",
+    "M5",
+    "M1",
+}
+
+
+@tool
+async def wait_for_market_update(
+    symbol: str,
+    timeframe: str = "M15",
+    poll_seconds: int = 5,
+) -> dict:
+    """
+    Wait for a new candle before continuing market analysis.
+
+    Use this after a WAIT or NO_TRADE decision so the system does not
+    repeatedly analyze identical market data.
+
+    Supported timeframes:
+    D1, H4, H1, M15, M5, M1.
+    """
+
+    if timeframe not in VALID_TIMEFRAMES:
+        return {
+            "success": False,
+            "error": f"Unsupported timeframe: {timeframe}",
+        }
+
+    try:
+        previous_time = get_latest_candle_time(
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+
+        print(
+            f"[WAIT] {symbol} {timeframe} | "
+            f"current candle: {previous_time}"
+        )
+
+        while True:
+            await asyncio.sleep(poll_seconds)
+
+            current_time = get_latest_candle_time(
+                symbol=symbol,
+                timeframe=timeframe,
+            )
+
+            if current_time != previous_time:
+
+                print(
+                    f"[MARKET UPDATE] {symbol} {timeframe} | "
+                    f"{previous_time} -> {current_time}"
+                )
+
+                return {
+                    "success": True,
+                    "event": "new_candle",
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "previous_candle_time": str(previous_time),
+                    "new_candle_time": str(current_time),
+                }
+
+    except Exception as exc:
+        return {
+            "success": False,
+            "event": "market_data_error",
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "error": str(exc),
+        }

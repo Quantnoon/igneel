@@ -13,3 +13,5 @@ webview/strategies
 *.sqlite3
 .venv
 __pycache__
+
+agent_tool_events.jsonl

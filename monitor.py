@@ -170,6 +170,7 @@ def can_trade(bot_config: dict) -> Dict[str, str]:
 
     date_obj = datetime.strptime(date_str, "%d/%m/%Y").date()
     today = datetime.now().date()
+    has_reached_dd = False
 
     if today > date_obj:
         account.update_account(
@@ -188,10 +189,12 @@ def can_trade(bot_config: dict) -> Dict[str, str]:
     reasons = []
     if  account_info_dict["equity"] <= account.get_account_info()["maximum_drawdown"]:
         reasons.append("Account has reached maximum drawdown")
+        has_reached_dd = True
         close_all_order()
 
-    if account_info_dict["equity"] <= account.get_account_info()["maximum_drawdown"]:
+    if account_info_dict["equity"] <= account.get_account_info()["today_drawdown"]:
         reasons.append("Account has reached daily drawdown")
+        has_reached_dd = True
         # close_all_order()
 
     if not _session_active(config["trading_sessions"], _utc_now()):
@@ -202,7 +205,7 @@ def can_trade(bot_config: dict) -> Dict[str, str]:
     if not bot_config["is_weekend_trading"] and (dt.weekday() == 5 or dt.weekday() == 6):
         reasons.append("Weekend trading is not allowed.")
 
-    if not config["allow_many_trades"]:
+    if not config["allow_many_trades"] and has_reached_dd == False:
         order_reason = _open_trade_reason(config["symbol"])
         if order_reason:
             reasons.append(order_reason)
@@ -240,7 +243,7 @@ def quantnoon_signal_provider(
                 )
 
                 record_signal = {
-                    "id": identifier,
+                    "id": f"{identifier}_{symbol}",
                     "algo_name": identifier,
                     "trade_date": trade_date.strftime('%d/%m/%Y, %H:%M:%S'),
                     "sl": signal["sl"],
@@ -297,7 +300,7 @@ def quantnoon_signal_provider(
                     exit_date=update_record["exit_date"],
                     gain=update_record["gain"]
                 )
-                _db.delete_row(f"{identifier}", "id", f"{identifier}")
+                _db.delete_row(f"{identifier}", "id", f"{identifier}_{symbol}")
 
             
 
