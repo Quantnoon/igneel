@@ -28,6 +28,10 @@ _indicators = [
     #     }
     # },
     {
+        "indicator": "COMBINED_TREND",
+        "timeframe": "M15"
+    },
+    {
         "indicator": "RESISTANCE_ZONE",
         "timeframe": "H4",
         "params": {
@@ -67,63 +71,23 @@ _indicators = [
 ]
 
 strategies = [
-    # {
-    #     "symbols": ["EURUSDc", "BTCUSDc", "GBPUSDc", "USDJPYc", "USDCADc", "AUDUSDc"],
-    #     "name": "support_resistance",
-    #     "indicators": _indicators,
-    #     "timeframes": ["H4", "M15"],
-    #     "date_range": "1W",
-    #     "strategy": ("support_resistance", sr_entry, sr_exit),
-    #     "config": {
-    #         "default_config": {
-    #             "sl_type": "custom",
-    #             "atr_multiplier": 1.5,
-    #             "rrr": 3,
-    #             "entry_tf": "M15",
-    #             "slippage": 2.5
-    #         },
-    #         "risk_config": {
-    #             "starting_balance":      50,
-    #             "currency":              "USD",   # or "NGN"
-    #             "ngn_conversion_rate":   1450,
-    #             "lot_size":              0.5,
-    #             "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
-    #             "daily_dd": 0.05, # in percentage
-    #             "maximum_dd": 0.7, # in percentage
-    #             "trading_days": [], # [] = all trading days
-    #         }
-    #     }
-    # },
     {
-        "symbols": ["EURUSDc", "GBPUSDc", "USDJPYc", "USDCADc", "AUDUSDc"],
-        "name": "sessions_breakout",
-        "indicators": [
-            # {"indicator": "EMA", "timeframe": "H4", "params": {"timeperiod": 50}, "outputs": ["ema_50"]},
-            # {"indicator": "CDLENGULFING", "timeframe": "M15"},
-            # {"indicator": "CDLHAMMER", "timeframe": "M15"},
-            # {"indicator": "CDLINVERTEDHAMMER", "timeframe": "M15"},
-            # {"indicator": "CDLMORNINGSTAR", "timeframe": "M15"},
-            # {"indicator": "CDLEVENINGSTAR", "timeframe": "M15"},
-            {"indicator": "LONDON_HIGH", "timeframe": "M15"},
-            {"indicator": "LONDON_LOW", "timeframe": "M15"},
-            {"indicator": "NEWYORK_HIGH", "timeframe": "M15"},
-            {"indicator": "NEWYORK_LOW", "timeframe": "M15"},
-            {"indicator": "ASIAN_HIGH", "timeframe": "M15"},
-            {"indicator": "ASIAN_LOW", "timeframe": "M15"},
-        ],
-        "timeframes": ["M15"],
-        "date_range": "2M",
-        "strategy": ("sessions_breakout", session_breakout_entry, session_breakout_exit),
+        "symbols": ["EURUSDc", "GBPUSDc", "USDCADc", "AUDUSDc"],
+        "name": "support_resistance",
+        "indicators": _indicators,
+        "timeframes": ["H4", "M15"],
+        "date_range": "1M",
+        "strategy": ("support_resistance", sr_entry, sr_exit),
         "config": {
             "default_config": {
-                "sl_type": "custom",
-                "atr_multiplier": 2.5,
+                "sl_type": "atr",
+                "atr_multiplier": 4,
                 "rrr": 2,
                 "entry_tf": "M15",
                 "slippage": 2.5
             },
             "risk_config": {
-                "starting_balance":      30,
+                "starting_balance":      10,
                 "currency":              "USD",   # or "NGN"
                 "ngn_conversion_rate":   1450,
                 "lot_size":              0.01,
@@ -133,5 +97,45 @@ strategies = [
                 "trading_days": [], # [] = all trading days
             }
         }
-    }
+    },
+    # {
+    #     "symbols": ["EURUSDc", "GBPUSDc", "USDJPYc", "USDCADc", "AUDUSDc"],
+    #     "name": "sessions_breakout",
+    #     "indicators": [
+    #         # {"indicator": "EMA", "timeframe": "H4", "params": {"timeperiod": 50}, "outputs": ["ema_50"]},
+    #         # {"indicator": "CDLENGULFING", "timeframe": "M15"},
+    #         # {"indicator": "CDLHAMMER", "timeframe": "M15"},
+    #         # {"indicator": "CDLINVERTEDHAMMER", "timeframe": "M15"},
+    #         # {"indicator": "CDLMORNINGSTAR", "timeframe": "M15"},
+    #         # {"indicator": "CDLEVENINGSTAR", "timeframe": "M15"},
+    #         {"indicator": "LONDON_HIGH", "timeframe": "M15"},
+    #         {"indicator": "LONDON_LOW", "timeframe": "M15"},
+    #         {"indicator": "NEWYORK_HIGH", "timeframe": "M15"},
+    #         {"indicator": "NEWYORK_LOW", "timeframe": "M15"},
+    #         {"indicator": "ASIAN_HIGH", "timeframe": "M15"},
+    #         {"indicator": "ASIAN_LOW", "timeframe": "M15"},
+    #     ],
+    #     "timeframes": ["M15"],
+    #     "date_range": "2M",
+    #     "strategy": ("sessions_breakout", session_breakout_entry, session_breakout_exit),
+    #     "config": {
+    #         "default_config": {
+    #             "sl_type": "custom",
+    #             "atr_multiplier": 2.5,
+    #             "rrr": 2,
+    #             "entry_tf": "M15",
+    #             "slippage": 2.5
+    #         },
+    #         "risk_config": {
+    #             "starting_balance":      30,
+    #             "currency":              "USD",   # or "NGN"
+    #             "ngn_conversion_rate":   1450,
+    #             "lot_size":              0.01,
+    #             "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
+    #             "daily_dd": 0.05, # in percentage
+    #             "maximum_dd": 0.7, # in percentage
+    #             "trading_days": [], # [] = all trading days
+    #         }
+    #     }
+    # }
 ]

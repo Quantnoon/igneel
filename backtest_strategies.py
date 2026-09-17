@@ -6,11 +6,14 @@ def sr_entry(df, i):
     resistance_high = df["resistance_high_H4"].values
     resistance_low = df["resistance_low_H4"].values
     close = df["close_M15"].values
+    # trend = df["trend_M15"].values
+    ema_trend = df["ema_trend_M15"].values
 
-    if close[i] > support_low[i] and close[i] < support_high[i]:
-        return "buy", support_low[i], None
-    elif close[i] > resistance_low[i] and close[i] < resistance_high[i]:
-        return "sell", resistance_high[i], None
+    if close[i] < resistance_low[i - 3] and (close[i - 1] > resistance_low[i - 3] and close[i - 1] < resistance_high[i - 3]) and ema_trend[i] == "down":
+        return "sell", resistance_high[i - 3],  None
+
+    if close[i] > support_high[i - 3] and (close[i - 1] < support_high[i - 3] and close[i - 1] > support_low[i - 3]) and ema_trend[i] == "up":
+        return "buy", support_low[i - 3], None
     return None, None, None
 
 def sr_exit(df, i, pos):
@@ -19,12 +22,13 @@ def sr_exit(df, i, pos):
     resistance_high = df["resistance_high_H4"].values
     resistance_low = df["resistance_low_H4"].values
     close = df["close_M15"].values
+    trend = df["trend_M15"].values
 
     if pos == "buy":
-        if (close[i] > resistance_low[i] and close[i] < resistance_high[i]) or close[i] < support_low[i]:
+        if trend[i] == "strong_down" or close[i] > resistance_low[i]:
             return True
     elif pos == "sell":
-        if (close[i] > support_low[i] and close[i] < support_high[i]) or close[i] > resistance_high[i]:
+        if trend[i] == "strong_up" or close[i] < support_high[i]:
             return True
     return False
 
