@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/igneel-logo.png" alt="Igneel, a red fire dragon" width="220">
+  <img src="docs/assets/Igneel.webp" alt="Igneel, a red fire dragon" width="220">
 </p>
 
 # Igneel
