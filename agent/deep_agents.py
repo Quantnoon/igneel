@@ -4,7 +4,6 @@ from agent.agent_tools import (
     close_all_trades,
     close_trade,
     get_account_snapshot,
-    get_compact_price_data,
     get_open_trades,
     get_price_data,
     modify_trade,
@@ -18,7 +17,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from agent.agent_prompts import ATLAS_SYSTEM_PROMPT, ACNOLOGIA_SYSTEM_PROMPT, IGNIA_SYSTEM_PROMPT
+from agent.agent_prompts import ATLAS_SYSTEM_PROMPT, ACNOLOGIA_SYSTEM_PROMPT, IGNIA_SYSTEM_PROMPT, GRANDINE_SYSTEM_PROMPT
 from agent.paths import AGENT_ROOT
 
 model = get_openai_model("gpt-5.6-luna")
@@ -52,6 +51,24 @@ acnologia_agent = create_deep_agent(
     ],
 )
 
+grandine_subagent = {
+    "name": "Grandine",
+    "description": (
+        "Analyze each existing position for Ignia. Calculate its P/L as a "
+        "percentage of account equity and, at or beyond -5% or +5%, retrieve "
+        "fresh indicator-backed price data and recommend HOLD, MODIFY_ORDER, "
+        "or CLOSE_ORDER. Grandine never executes broker actions."
+    ),
+    "system_prompt": GRANDINE_SYSTEM_PROMPT,
+    "skills": ["/skills/technical-indicators/"],
+    "tools": [
+        get_price_data,
+        get_open_trades,
+        get_account_snapshot,
+    ],
+    "model": model,
+}
+
 
 ignia_agent = create_deep_agent(
     model=model,
@@ -65,4 +82,5 @@ ignia_agent = create_deep_agent(
         close_trade,
         close_all_trades,
     ],
+    subagents=[grandine_subagent]
 )

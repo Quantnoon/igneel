@@ -359,6 +359,7 @@ LOG_FILE = AGENT_TOOL_EVENTS_LOG_PATH
 SUBAGENT_NAMES = {
     "Atlas",
     "Acnologia",
+    "Grandine",
     "Ignia",
 }
 

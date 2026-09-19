@@ -21,10 +21,10 @@ config = {
 
 async def run_trader():
     input_data = {
-        "symbol": "Volatility 25 Index",
+        "symbol": "BTCUSD",
 
         "account_setup": (
-            "Use 0.5 volume when a valid trade is approved."
+            "Use 0.01 volume when a valid trade is approved."
         ),
 
         # Initial graph state
@@ -32,17 +32,11 @@ async def run_trader():
         "open_trades": [],
     }
 
-    trading_graph.invoke(
+    await trading_graph.ainvoke(
         input_data,
         config=config,
         version="v2",
     )
-    
-    # async for event in trading_graph.astream_events(
-        
-    # ):
-    #     # print_agent_event(event)
-    #     pass
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from types import ModuleType
 from agent.agent_prompts import (
     ACNOLOGIA_SYSTEM_PROMPT,
     ATLAS_SYSTEM_PROMPT,
+    GRANDINE_SYSTEM_PROMPT,
     IGNIA_SYSTEM_PROMPT,
 )
 from agent.paths import (
@@ -100,6 +101,53 @@ def test_acnologia_has_indicator_skill_and_price_data_tool():
 
     assert 'skills=["/skills/technical-indicators/"]' in decision_agent
     assert "get_price_data" in decision_agent
+
+
+def test_grandine_is_a_read_only_threshold_management_subagent():
+    source = (AGENT_ROOT / "deep_agents.py").read_text(encoding="utf-8")
+    registration = re.search(
+        r"grandine_subagent = \{(.*?)\n\}",
+        source,
+        flags=re.DOTALL,
+    ).group(1)
+
+    assert "Analyze each existing position for Ignia" in registration
+    assert 'skills": ["/skills/technical-indicators/"]' in registration
+    assert all(tool in registration for tool in (
+        "get_price_data",
+        "get_open_trades",
+        "get_account_snapshot",
+    ))
+    assert all(tool not in registration for tool in (
+        "modify_trade",
+        "close_trade",
+        "place_trade",
+        "close_all_trades",
+    ))
+
+
+def test_grandine_prompt_enforces_equity_threshold_analysis_and_safety():
+    prompt = GRANDINE_SYSTEM_PROMPT
+
+    assert "position profit / current account equity * 100" in prompt
+    assert "P/L percentage <= -5%" in prompt
+    assert "P/L percentage >= +5%" in prompt
+    assert "/skills/technical-indicators/SKILL.md" in prompt
+    assert "Call `get_price_data`" in prompt
+    assert "Never recommend widening a protective\nstop" in prompt
+    assert "Do not recommend new entries, reversals, stacking, partial closes" in prompt
+    assert "TICKET:" in prompt
+    assert "FRESH MARKET EVIDENCE:" in prompt
+    assert "RECOMMENDATION:" in prompt
+
+
+def test_ignia_delegates_management_analysis_and_retains_execution_control():
+    prompt = IGNIA_SYSTEM_PROMPT
+
+    assert "## GRANDINE ANALYSIS (REQUIRED)" in prompt
+    assert "delegate every POSITION MANAGEMENT\nreview to Grandine" in prompt
+    assert "You retain sole responsibility for broker execution." in prompt
+    assert "Re-read the latest open-trade state." in prompt
 
 
 def test_trade_decision_parser_accepts_qualified_long_and_short_outputs(monkeypatch):
