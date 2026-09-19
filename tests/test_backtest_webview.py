@@ -3,7 +3,7 @@ import json
 import pandas as pd
 import pytest
 
-from backtest_tools import _webview_strategies, write_webview_resources
+from backtest.backtest_tools import _webview_strategies, write_webview_resources
 
 
 def frame():

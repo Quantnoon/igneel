@@ -1,9 +1,15 @@
+import sys
 from pathlib import Path
+
+if __package__ in {None, ""}:
+    project_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(project_root))
+
 from backtest_engine.main import Engine
-from backtest_tools import write_webview_resources
+from backtest.backtest_tools import write_webview_resources
 from collection import PriceDataCollection
 from connection import connect
-from backtest_config import strategies, backtest_auth
+from backtest.backtest_config import strategies, backtest_auth
 
 conn = connect(backtest_auth)
 
@@ -32,6 +38,6 @@ if __name__ == "__main__":
         for symbol in symbols:
             df[symbol] = price_data.get_price_data(symbol)
 
-        webview_dir = Path(__file__).resolve().parent / "webview" / "strategies"
+        webview_dir = Path(__file__).resolve().parent.parent / "webview" / "strategies"
         write_webview_resources(webview_dir, symbols, strategy["strategy"], result, df, entry_tf, indicators)
         print(f"WebView resources written to {webview_dir}")

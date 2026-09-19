@@ -1,9 +1,9 @@
-from backtest_strategies import sr_entry, sr_exit, session_breakout_entry, session_breakout_exit
+from backtest.backtest_strategies import sr_entry, sr_exit, session_breakout_entry, session_breakout_exit
 from dotenv import load_dotenv
 from pathlib import Path
 import os
 
-load_dotenv(Path(__file__).with_name(".env"))
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 backtest_auth = {
     "login": int(os.environ["EXNESS_LOGIN"]),

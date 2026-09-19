@@ -1,13 +1,16 @@
 from typing import Any, Literal, TypedDict
 
-from deep_agents import (
-    market_analysis_agent,
-    trade_decision_agent,
-    order_manager_agent,
-    wait_for_market_update,
+from agent.deep_agents import (
+    atlas_agent,
+    acnologia_agent,
+    ignia_agent,
 )
 
-from agent_tools import get_open_trades
+from agent.agent_tools import (
+    VALID_TIMEFRAMES,
+    get_open_trades,
+    wait_for_market_update,
+)
 
 
 # ============================================================
@@ -20,6 +23,8 @@ class TradingState(TypedDict, total=False):
 
     # Market analysis
     market_analysis: str
+
+    account_setup: str
 
     # Trade decision
     decision: Literal[
@@ -67,44 +72,6 @@ def get_last_message_content(result) -> str:
         return content
 
     return str(content)
-
-
-import re
-
-
-def parse_trade_decision(text: str) -> str:
-    """
-    Parse the decision from the trade-decision-agent response.
-
-    Supports formats such as:
-
-    DECISION: WAIT
-
-    DECISION:
-    WAIT
-
-    DECISION : LONG
-    """
-
-    if not text:
-        raise RuntimeError(
-            "trade-decision-agent returned an empty response."
-        )
-
-    match = re.search(
-        r"\bDECISION\s*:\s*(NO_TRADE|LONG|SHORT|WAIT)\b",
-        text,
-        flags=re.IGNORECASE,
-    )
-
-    if not match:
-        raise RuntimeError(
-            "trade-decision-agent did not return "
-            "a recognized DECISION.\n\n"
-            f"{text}"
-        )
-
-    return match.group(1).upper()
 
 
 def extract_trades(result) -> list:
@@ -274,11 +241,11 @@ async def market_analysis_node(
     )
 
     print(
-        f"\n\n[GRAPH] MARKET ANALYSIS: "
+        f"\n\n[GRAPH] ATLAS: "
         f"{symbol}"
     )
 
-    result = await market_analysis_agent.ainvoke(
+    result = await atlas_agent.ainvoke(
         {
             "messages": [
                 {
@@ -309,7 +276,7 @@ Return your current technical market analysis.
     )
 
     print(
-        "\n[MARKET ANALYSIS RESULT]"
+        "\n[ATLAS RESULT]"
     )
 
     print(analysis)
@@ -322,41 +289,243 @@ Return your current technical market analysis.
 # ============================================================
 # TRADE DECISION
 # ============================================================
+import re
+import math
+from typing import Any
 
-async def trade_decision_node(
-    state: TradingState,
-):
+
+DEFAULT_LOT_SIZE = 0.01
+
+
+def resolve_lot_size(account_setup: str) -> float:
+    """Return the first valid lot size explicitly stated in account prose."""
+
+    if not isinstance(account_setup, str):
+        return DEFAULT_LOT_SIZE
+
+    number = r"(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
+    patterns = (
+        rf"\b(?:lot\s*size|lots?|volume)\s*(?::|=|is)?\s*{number}",
+        rf"(?<![-+\w.]){number}\s*(?:lots?|volume)\b",
+    )
+
+    matches = []
+    for pattern in patterns:
+        matches.extend(re.finditer(pattern, account_setup, flags=re.IGNORECASE))
+
+    for match in sorted(matches, key=lambda item: item.start()):
+        try:
+            lot_size = float(match.group("value"))
+        except (TypeError, ValueError):
+            continue
+
+        if math.isfinite(lot_size) and lot_size > 0:
+            return lot_size
+
+    return DEFAULT_LOT_SIZE
+
+def parse_acnologia_decision(text: str) -> dict[str, Any]:
     """
-    Convert market analysis into:
+    Parse Acnologia's response.
 
-    LONG
-    SHORT
-    WAIT
-    NO_TRADE
+    Expected format:
+
+    DECISION:
+    LONG | SHORT | WAIT | NO_TRADE
+
+    CONFIDENCE:
+    HIGH | MODERATE | LOW
+
+    ENTRY PRICE:
+    <number> | NONE
+
+    STOP LOSS:
+    <number> | NONE
+
+    TAKE PROFIT:
+    <number> | NONE
+
+    LOT SIZE:
+    <number> | NONE
+    """
+
+    if not text:
+        raise RuntimeError(
+            "Acnologia returned an empty response."
+        )
+
+    # -----------------------------
+    # Decision
+    # -----------------------------
+
+    decision_match = re.search(
+        r"\bDECISION\s*:\s*(NO_TRADE|LONG|SHORT|WAIT)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if not decision_match:
+        raise RuntimeError(
+            "Acnologia did not return "
+            f"a recognized DECISION.\n\n{text}"
+        )
+
+    decision = decision_match.group(1).upper()
+
+    # -----------------------------
+    # Confidence
+    # -----------------------------
+
+    confidence_match = re.search(
+        r"\bCONFIDENCE\s*:\s*(HIGH|MODERATE|LOW)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+
+    if not confidence_match:
+        raise RuntimeError(
+            "Acnologia did not return "
+            f"a recognized CONFIDENCE.\n\n{text}"
+        )
+
+    confidence = confidence_match.group(1).upper()
+
+    # -----------------------------
+    # Helper
+    # -----------------------------
+
+    def parse_number(label: str):
+        match = re.search(
+            rf"\b{re.escape(label)}\s*:\s*(NONE|-?\d+(?:\.\d+)?)",
+            text,
+            flags=re.IGNORECASE,
+        )
+
+        if not match:
+            raise RuntimeError(
+                f"Acnologia did not return {label}.\n\n{text}"
+            )
+
+        value = match.group(1)
+
+        if value.upper() == "NONE":
+            return None
+
+        return float(value)
+
+    # -----------------------------
+    # Execution values
+    # -----------------------------
+
+    entry_price = parse_number("ENTRY PRICE")
+    stop_loss = parse_number("STOP LOSS")
+    take_profit = parse_number("TAKE PROFIT")
+    lot_size = parse_number("LOT SIZE")
+
+    wait_timeframe_match = re.search(
+        r"\bWAIT\s+TIMEFRAME\s*:\s*([A-Z0-9]+)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    wait_timeframe = (
+        wait_timeframe_match.group(1).upper()
+        if wait_timeframe_match
+        else "M15"
+    )
+    if wait_timeframe not in VALID_TIMEFRAMES:
+        wait_timeframe = "M15"
+
+    # -----------------------------
+    # Validate LONG / SHORT
+    # -----------------------------
+
+    if decision in {"LONG", "SHORT"}:
+        if entry_price is None:
+            raise RuntimeError(
+                f"{decision} requires ENTRY PRICE."
+            )
+
+        if stop_loss is None:
+            raise RuntimeError(
+                f"{decision} requires STOP LOSS."
+            )
+
+        if take_profit is None:
+            raise RuntimeError(
+                f"{decision} requires TAKE PROFIT."
+            )
+
+        if lot_size is None:
+            raise RuntimeError(
+                f"{decision} requires LOT SIZE."
+            )
+
+    # LONG:
+    # SL < ENTRY < TP
+    if decision == "LONG":
+        if not stop_loss < entry_price < take_profit:
+            raise RuntimeError(
+                "Invalid LONG trade levels: expected "
+                "STOP LOSS < ENTRY PRICE < TAKE PROFIT.\n\n"
+                f"SL={stop_loss}, "
+                f"ENTRY={entry_price}, "
+                f"TP={take_profit}"
+            )
+
+    # SHORT:
+    # TP < ENTRY < SL
+    if decision == "SHORT":
+        if not take_profit < entry_price < stop_loss:
+            raise RuntimeError(
+                "Invalid SHORT trade levels: expected "
+                "TAKE PROFIT < ENTRY PRICE < STOP LOSS.\n\n"
+                f"TP={take_profit}, "
+                f"ENTRY={entry_price}, "
+                f"SL={stop_loss}"
+            )
+
+    return {
+        "decision": decision,
+        "confidence": confidence,
+        "entry_price": entry_price,
+        "stop_loss": stop_loss,
+        "take_profit": take_profit,
+        "lot_size": lot_size,
+        "wait_timeframe": wait_timeframe,
+    }
+
+
+async def trade_decision_node(state: TradingState):
+    """
+    Evaluate market analysis and return:
+
+    - decision
+    - confidence
+    - entry price
+    - stop loss
+    - take profit
+    - lot size
     """
 
     analysis = state["market_analysis"]
+    account_setup = state["account_setup"]
+    lot_size = resolve_lot_size(account_setup)
 
-    print(
-        "\n\n[GRAPH] TRADE DECISION"
-    )
+    print("\n\n[GRAPH] ACNOLOGIA")
 
-    result = await trade_decision_agent.ainvoke(
+    result = await acnologia_agent.ainvoke(
         {
             "messages": [
                 {
                     "role": "user",
                     "content": f"""
-Evaluate the following market analysis.
+Evaluate the following market analysis and make the final trade decision.
 
-Return exactly one trading decision:
+LOT SIZE:
+{lot_size}
 
-LONG
-SHORT
-WAIT
-NO_TRADE
-
-Do not force a trade.
+Use the supplied LOT SIZE exactly as provided.
+Do not calculate or modify it.
 
 Market analysis:
 
@@ -367,25 +536,30 @@ Market analysis:
         }
     )
 
-    output = get_last_message_content(
-        result
-    )
+    output = get_last_message_content(result)
 
-    decision = parse_trade_decision(
-        output
-    )
+    trade = parse_acnologia_decision(output)
 
-    print(
-        f"\n[TRADE DECISION: {decision}]"
-    )
+    print(f"\n[ACNOLOGIA DECISION: {trade['decision']}]")
+    print(f"[CONFIDENCE: {trade['confidence']}]")
+    print(f"[ENTRY PRICE: {trade['entry_price']}]")
+    print(f"[STOP LOSS: {trade['stop_loss']}]")
+    print(f"[TAKE PROFIT: {trade['take_profit']}]")
+    print(f"[LOT SIZE: {trade['lot_size']}]")
+    print(f"[WAIT TIMEFRAME: {trade['wait_timeframe']}]")
 
     print(output)
 
     return {
-        "decision": decision,
+        "decision": trade["decision"],
+        "confidence": trade["confidence"],
+        "entry_price": trade["entry_price"],
+        "stop_loss": trade["stop_loss"],
+        "take_profit": trade["take_profit"],
+        "lot_size": trade["lot_size"],
+        "wait_timeframe": trade["wait_timeframe"],
         "decision_output": output,
     }
-
 
 def route_trade_decision(
     state: TradingState,
@@ -456,11 +630,11 @@ async def order_manager_node(
     if open_trades_exist:
 
         print(
-            f"\n\n[GRAPH] ORDER MANAGER: "
+            f"\n\n[GRAPH] IGNIA: "
             f"MANAGE {symbol}"
         )
 
-        result = await order_manager_agent.ainvoke(
+        result = await ignia_agent.ainvoke(
             {
                 "messages": [
                     {
@@ -560,11 +734,11 @@ Return the action taken and the reason.
         )
 
     print(
-        f"\n\n[GRAPH] ORDER MANAGER: "
+        f"\n\n[GRAPH] IGNIA: "
         f"NEW {decision} {symbol}"
     )
 
-    result = await order_manager_agent.ainvoke(
+    result = await ignia_agent.ainvoke(
         {
             "messages": [
                 {

@@ -5,7 +5,7 @@ from langgraph.graph import (
     START,
 )
 
-from agent_nodes import (
+from agent.agent_nodes import (
     TradingState,
 
     check_position_node,
@@ -220,5 +220,5 @@ def save_graph_image(
     #     os.startfile(path)
 
 
-# if __name__ == "__main__":
-#     save_graph_image()
+if __name__ == "__main__":
+    save_graph_image()

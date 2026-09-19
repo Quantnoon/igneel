@@ -6,12 +6,12 @@ webview/node_modules/
 webview/dist/
 webview/df.csv
 webview/config.json
-agent/large_tool_results
-agent_decisions.jsonl
+agent/large_tool_results/
+agent/agent_decisions.jsonl
 webview/strategies
 .env
 *.sqlite3
 .venv
 __pycache__
 
-agent_tool_events.jsonl
+agent/agent_tool_events.jsonl

@@ -1,7 +1,13 @@
 import sys
+from pathlib import Path
+
+if __package__ in {None, ""}:
+    project_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(project_root))
+
 import asyncio
-from agent_graph import trading_graph
-from agent_tools import print_agent_event, connect_mt5_terminal
+from agent.agent_graph import trading_graph
+from agent.agent_tools import print_agent_event, connect_mt5_terminal
 
 sys.stdout.reconfigure(encoding="utf-8")
 
@@ -15,28 +21,28 @@ config = {
 
 async def run_trader():
     input_data = {
-        "symbol": "XAUUSD",
+        "symbol": "Volatility 25 Index",
 
-        "strategy_request": (
-            "Look for scalping opportunities "
-            "on lower timeframes. "
-            "use as many strategy as posible to ensure that you open a trade on every new candle"
-            "Use 0.01 volume when a valid trade is approved."
+        "account_setup": (
+            "Use 0.5 volume when a valid trade is approved."
         ),
-
-        "wait_timeframe": "M5",
 
         # Initial graph state
         "open_trades_exist": False,
         "open_trades": [],
     }
-    
-    async for event in trading_graph.astream_events(
+
+    trading_graph.invoke(
         input_data,
         config=config,
         version="v2",
-    ):
-        print_agent_event(event)
+    )
+    
+    # async for event in trading_graph.astream_events(
+        
+    # ):
+    #     # print_agent_event(event)
+    #     pass
 
 
 if __name__ == "__main__":

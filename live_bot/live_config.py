@@ -1,9 +1,9 @@
-from signals import sd_entry, sd_exit, sr_entry, sr_exit, get_test_signal, get_test_exit_signal
+from live_bot.signals import sd_entry, sd_exit, sr_entry, sr_exit, get_test_signal, get_test_exit_signal
 from dotenv import load_dotenv
 from pathlib import Path
 import os
 
-load_dotenv(Path(__file__).with_name(".env"))
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 _deployments = {
     "sd_bot": {

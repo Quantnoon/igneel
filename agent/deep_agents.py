@@ -1,59 +1,61 @@
 import sys
-import asyncio
 
-from agent_tools import (
+from agent.agent_tools import (
     close_all_trades,
     close_trade,
-    connect_mt5_terminal,
     get_account_snapshot,
     get_compact_price_data,
     get_open_trades,
     get_price_data,
     modify_trade,
     place_trade,
-    trade_execution_guard,
-    wait_for_market_update,
-    print_agent_event
 )
 
-from agent_models import get_openai_model
+from agent.agent_models import get_openai_model
+from agent.web_tools import fetch_url, web_search
 
 sys.stdout.reconfigure(encoding="utf-8")
 
 from deepagents import create_deep_agent
 from deepagents.backends.filesystem import FilesystemBackend
-from agent_prompts import MARKET_ANALYSIS_SYSTEM_PROMPT, TRADE_DECISION_SYSTEM_PROMPT, ORDER_MANAGER_SYSTEM_PROMPT
+from agent.agent_prompts import ATLAS_SYSTEM_PROMPT, ACNOLOGIA_SYSTEM_PROMPT, IGNIA_SYSTEM_PROMPT
+from agent.paths import AGENT_ROOT
 
 model = get_openai_model("gpt-5.6-luna")
 
-backend = FilesystemBackend(root_dir="./agent")
+backend = FilesystemBackend(root_dir=str(AGENT_ROOT))
 
 # ============================================================
 # SPECIALIST DEEP AGENTS
 # ============================================================
 
-market_analysis_agent = create_deep_agent(
+atlas_agent = create_deep_agent(
     model=model,
-    system_prompt=MARKET_ANALYSIS_SYSTEM_PROMPT,
+    system_prompt=ATLAS_SYSTEM_PROMPT,
     backend=backend,
     skills=["/skills/"],
     tools=[
-        get_compact_price_data,
+        get_price_data,
+        web_search,
+        fetch_url,
     ],
 )
 
 
-trade_decision_agent = create_deep_agent(
+acnologia_agent = create_deep_agent(
     model=model,
-    system_prompt=TRADE_DECISION_SYSTEM_PROMPT,
+    system_prompt=ACNOLOGIA_SYSTEM_PROMPT,
     backend=backend,
-    tools=[],
+    skills=["/skills/technical-indicators/"],
+    tools=[
+        get_price_data
+    ],
 )
 
 
-order_manager_agent = create_deep_agent(
+ignia_agent = create_deep_agent(
     model=model,
-    system_prompt=ORDER_MANAGER_SYSTEM_PROMPT,
+    system_prompt=IGNIA_SYSTEM_PROMPT,
     backend=backend,
     tools=[
         get_open_trades,

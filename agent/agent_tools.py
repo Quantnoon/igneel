@@ -23,7 +23,9 @@ _DATE_RANGE_PATTERN = re.compile(r"^[1-9]\d*[DWMY]$", re.IGNORECASE)
 from pathlib import Path
 import os
 
-load_dotenv(Path(__file__).with_name(".env"))
+from agent.paths import AGENT_TOOL_EVENTS_LOG_PATH, ENV_FILE
+
+load_dotenv(ENV_FILE)
 
 _connection_auth: dict[str, Any] | None = {
     "login": int(os.environ["DERIV_LOGIN"]),
@@ -250,35 +252,70 @@ def _tool_failure(message):
     return {"success": False, "data": None, "error": {"code": None, "message": message}}
 
 
+def _normalize_market_order_type(order_type: str) -> str | None:
+    if not isinstance(order_type, str):
+        return None
+
+    aliases = {
+        "long": "buy",
+        "buy": "buy",
+        "short": "sell",
+        "sell": "sell",
+    }
+    return aliases.get(order_type.strip().lower())
+
+
 def place_trade(symbol: str, order_type: str, volume: float, stop_loss: float, take_profit: float):
     """Place an agent-selected, broker-valid market order with evidence-based exits."""
-    if order_type not in ("buy", "sell"):
-        return _tool_failure("order_type must be buy or sell for the continuous strategy.")
-    if not all(isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0 for value in (volume, stop_loss, take_profit)):
-        return _tool_failure("volume, stop_loss, and take_profit must be positive numbers.")
+    side = _normalize_market_order_type(order_type)
+    if side is None:
+        return _tool_failure("order_type must be one of LONG, SHORT, buy, or sell.")
+
+    if not all(
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and value > 0
+        for value in (volume, stop_loss, take_profit)
+    ):
+        return _tool_failure(
+            "volume, stop_loss, and take_profit must be positive finite numbers."
+        )
+
     try:
         tick = mt5.symbol_info_tick(symbol)
         symbol_info = mt5.symbol_info(symbol)
         if tick is None or symbol_info is None:
             return _tool_failure("Current tick or symbol information is unavailable.")
-        entry_price = float(tick.ask if order_type == "buy" else tick.bid)
-        if order_type == "buy" and not (stop_loss < entry_price < take_profit):
-            return _tool_failure("Buy trades require stop_loss below and take_profit above the current ask.")
-        if order_type == "sell" and not (take_profit < entry_price < stop_loss):
-            return _tool_failure("Sell trades require take_profit below and stop_loss above the current bid.")
+        entry_price = float(tick.ask if side == "buy" else tick.bid)
+
+        if side == "buy" and not (stop_loss < entry_price < take_profit):
+            return _tool_failure(
+                "Buy trades require stop_loss below and take_profit above the current ask."
+            )
+        if side == "sell" and not (take_profit < entry_price < stop_loss):
+            return _tool_failure(
+                "Sell trades require take_profit below and stop_loss above the current bid."
+            )
+
         volume_min = float(symbol_info.volume_min)
         volume_max = float(symbol_info.volume_max)
         volume_step = float(symbol_info.volume_step)
         if volume_min <= 0 or volume_max < volume_min or volume_step <= 0:
             return _tool_failure("Broker volume constraints are invalid.")
+
         steps = (volume - volume_min) / volume_step
-        if not volume_min <= volume <= volume_max or not math.isclose(steps, round(steps), abs_tol=1e-8):
-            return _tool_failure("The requested volume is not supported by this broker for this symbol.")
+        if not volume_min <= volume <= volume_max or not math.isclose(
+            steps, round(steps), abs_tol=1e-8
+        ):
+            return _tool_failure(
+                "The requested volume is not supported by this broker for this symbol."
+            )
     except ValueError as error:
         return _tool_failure(str(error))
     except Exception:
         return _tool_failure("Unable to validate the requested trade volume.")
-    return _place_order(symbol=symbol, order_type=order_type, volume=volume, price=entry_price, sl=stop_loss, tp=take_profit, magic=1122, comment="")
+    return _place_order(symbol=symbol, order_type=side, volume=volume, price=entry_price, sl=stop_loss, tp=take_profit, magic=1122, comment="")
 
 
 def close_trade(ticket: int, target: str = "position", volume: float | None = None, deviation: int = 20, magic: int = 0, comment: str = "", type_filling: str = "return"):
@@ -317,11 +354,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-LOG_FILE = Path("agent_tool_events.jsonl")
+LOG_FILE = AGENT_TOOL_EVENTS_LOG_PATH
 
 SUBAGENT_NAMES = {
-    "market-analysis-agent",
-    "trade-decision-agent",
+    "Atlas",
+    "Acnologia",
+    "Ignia",
 }
 
 # task run_id -> delegated subagent

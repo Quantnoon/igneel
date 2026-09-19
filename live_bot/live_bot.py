@@ -1,11 +1,18 @@
+import sys
+from pathlib import Path
+
+if __package__ in {None, ""}:
+    project_root = Path(__file__).resolve().parent.parent
+    sys.path.insert(0, str(project_root))
+
 from connection import connect
 from collection import PriceDataCollection
 from order import place_order, close_order, open_orders, atr_step_trailing
-from account import Account
-from monitor import can_trade, quantnoon_signal_provider
+from live_bot.account import Account
+from live_bot.monitor import can_trade, quantnoon_signal_provider
 import time
 from database import Database
-from live_config import active_config
+from live_bot.live_config import active_config
 import MetaTrader5 as mt5
 
 result = connect(active_config["auth"])

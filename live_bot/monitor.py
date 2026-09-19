@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import MetaTrader5 as mt5
 import pandas as pd
 
-from account import Account
+from live_bot.account import Account
 from order import close_all_order, open_orders
 from database import Database
 from quantnoon_signal import SignalSender, SignalRecorder
@@ -15,7 +15,7 @@ from pathlib import Path
 import os
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).with_name(".env"))
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 SESSION_WINDOWS = {
     "asia": (0, 9),

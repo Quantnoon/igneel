@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 sys.modules.setdefault("MetaTrader5", SimpleNamespace())
-import monitor
+import live_bot.monitor as monitor
 
 
 class FakeDatabase:
