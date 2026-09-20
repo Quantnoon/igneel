@@ -16,13 +16,10 @@ from agent.web_tools import fetch_url, web_search
 sys.stdout.reconfigure(encoding="utf-8")
 
 from deepagents import create_deep_agent
-from deepagents.backends.filesystem import FilesystemBackend
 from agent.agent_prompts import ATLAS_SYSTEM_PROMPT, ACNOLOGIA_SYSTEM_PROMPT, IGNIA_SYSTEM_PROMPT, GRANDINE_SYSTEM_PROMPT
-from agent.paths import AGENT_ROOT
+from agent.agent_backend import store, backend, backend_with_sandbox
 
 model = get_openai_model("gpt-5.6-luna")
-
-backend = FilesystemBackend(root_dir=str(AGENT_ROOT))
 
 # ============================================================
 # SPECIALIST DEEP AGENTS
@@ -31,8 +28,10 @@ backend = FilesystemBackend(root_dir=str(AGENT_ROOT))
 atlas_agent = create_deep_agent(
     model=model,
     system_prompt=ATLAS_SYSTEM_PROMPT,
-    backend=backend,
+    backend=backend_with_sandbox,
     skills=["/skills/"],
+    store=store,
+    memory=["/memory/AGENTS.md"],
     tools=[
         get_price_data,
         web_search,
@@ -46,6 +45,8 @@ acnologia_agent = create_deep_agent(
     system_prompt=ACNOLOGIA_SYSTEM_PROMPT,
     backend=backend,
     skills=["/skills/technical-indicators/"],
+    store=store,
+    memory=["/memory/AGENTS.md"],
     tools=[
         get_price_data
     ],
@@ -61,6 +62,8 @@ grandine_subagent = {
     ),
     "system_prompt": GRANDINE_SYSTEM_PROMPT,
     "skills": ["/skills/technical-indicators/"],
+    "store": store,
+    "memory": ["/memory/AGENTS.md"],
     "tools": [
         get_price_data,
         get_open_trades,
@@ -74,6 +77,8 @@ ignia_agent = create_deep_agent(
     model=model,
     system_prompt=IGNIA_SYSTEM_PROMPT,
     backend=backend,
+    store=store,
+    memory=["/memory/AGENTS.md"],
     tools=[
         get_open_trades,
         get_account_snapshot,

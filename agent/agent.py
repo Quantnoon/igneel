@@ -6,6 +6,8 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(project_root))
 
 import asyncio
+
+from agent.agent_backend import initialize_memory, shutdown_sandbox, sync_memory
 from agent.agent_graph import trading_graph
 from agent.agent_tools import print_agent_event, connect_mt5_terminal
 
@@ -32,11 +34,14 @@ async def run_trader():
         "open_trades": [],
     }
 
+    initialize_memory()
+
     await trading_graph.ainvoke(
         input_data,
         config=config,
         version="v2",
     )
+    sync_memory()
 
 
 if __name__ == "__main__":
@@ -53,4 +58,6 @@ if __name__ == "__main__":
             print(e)
         else:
             raise
+    finally:
+        shutdown_sandbox()
 

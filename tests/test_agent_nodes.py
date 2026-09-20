@@ -44,6 +44,13 @@ def test_agent_input_does_not_set_wait_timeframe():
     assert '"wait_timeframe"' not in (AGENT_ROOT / "agent.py").read_text(encoding="utf-8")
 
 
+def test_agent_initializes_memory_before_invoking_the_graph():
+    source = (AGENT_ROOT / "agent.py").read_text(encoding="utf-8")
+
+    assert source.index("    initialize_memory()") < source.index("    await trading_graph.ainvoke")
+    assert source.index("    await trading_graph.ainvoke") < source.index("    sync_memory()")
+
+
 def test_agent_runtime_paths_are_rooted_in_the_package():
     source = (AGENT_ROOT / "deep_agents.py").read_text(encoding="utf-8")
 
@@ -51,7 +58,8 @@ def test_agent_runtime_paths_are_rooted_in_the_package():
     assert SKILLS_ROOT == AGENT_ROOT / "skills"
     assert LARGE_TOOL_RESULTS_DIR == AGENT_ROOT / "large_tool_results"
     assert AGENT_TOOL_EVENTS_LOG_PATH == AGENT_ROOT / "agent_tool_events.jsonl"
-    assert "FilesystemBackend(root_dir=str(AGENT_ROOT))" in source
+    assert "from agent.agent_backend import store, backend, backend_with_sandbox" in source
+    assert "backend=backend" in source
     assert "/skills/technical-indicators/SKILL.md" in ACNOLOGIA_SYSTEM_PROMPT
 
 
