@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal, TypedDict
 
 from agent.deep_agents import (
@@ -11,6 +12,7 @@ from agent.agent_tools import (
     get_open_trades,
     wait_for_market_update,
 )
+from agent.paths import SKILLS_ROOT
 
 
 # ============================================================
@@ -19,12 +21,13 @@ from agent.agent_tools import (
 
 class TradingState(TypedDict, total=False):
     symbol: str
+    strategy: str
     strategy_request: str
 
     # Market analysis
     market_analysis: str
 
-    account_setup: str
+    lot_size: float
 
     # Trade decision
     decision: Literal[
@@ -49,6 +52,32 @@ class TradingState(TypedDict, total=False):
 # ============================================================
 # HELPERS
 # ============================================================
+
+_STRATEGY_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+_STRATEGIES_ROOT = (SKILLS_ROOT / "strategies").resolve()
+
+
+def resolve_strategy_skill(strategy: object) -> tuple[str, str]:
+    """Return the validated strategy identifier and its sandbox skill path."""
+
+    if not isinstance(strategy, str) or not strategy:
+        raise ValueError(
+            "strategy must be a non-empty strategy directory name."
+        )
+
+    if not _STRATEGY_SLUG.fullmatch(strategy):
+        raise ValueError(
+            "strategy must contain only lowercase letters, digits, and hyphens."
+        )
+
+    skill_file = (_STRATEGIES_ROOT / strategy / "SKILL.md").resolve()
+    if skill_file.parent.parent != _STRATEGIES_ROOT or not skill_file.is_file():
+        raise ValueError(
+            f"Unknown strategy '{strategy}'. Expected "
+            "agent/skills/strategies/<strategy>/SKILL.md."
+        )
+
+    return strategy, f"/skills/strategies/{strategy}/SKILL.md"
 
 def get_last_message_content(result) -> str:
     """
@@ -234,11 +263,8 @@ async def market_analysis_node(
     """
 
     symbol = state["symbol"]
-
-    request = state.get(
-        "strategy_request",
-        "",
-    )
+    strategy, strategy_skill_path = resolve_strategy_skill(state.get("strategy"))
+    request = state.get("strategy_request", "")
 
     print(
         f"\n\n[GRAPH] ATLAS: "
@@ -259,10 +285,16 @@ Symbol:
 Trading objective:
 {request}
 
+Active strategy:
+{strategy}
+
+Strategy skill path:
+{strategy_skill_path}
+
 There are currently no open trades requiring management.
 
-Investigate the current technical market condition using your
-available market-data tools and technical-indicator skill.
+Read the specified strategy skill before retrieving market data. Use only that
+strategy's rules; do not read or combine rules from other strategy skills.
 
 Return your current technical market analysis.
 """,
@@ -294,37 +326,23 @@ import math
 from typing import Any
 
 
-DEFAULT_LOT_SIZE = 0.01
+def validate_lot_size(value: object) -> float:
+    """Return one valid runtime lot size without applying a fallback."""
+
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("lot_size must be a positive finite number.")
+
+    lot_size = float(value)
+    if not math.isfinite(lot_size) or lot_size <= 0:
+        raise ValueError("lot_size must be a positive finite number.")
+
+    return lot_size
 
 
-def resolve_lot_size(account_setup: str) -> float:
-    """Return the first valid lot size explicitly stated in account prose."""
-
-    if not isinstance(account_setup, str):
-        return DEFAULT_LOT_SIZE
-
-    number = r"(?P<value>[+-]?(?:\d+(?:\.\d*)?|\.\d+))"
-    patterns = (
-        rf"\b(?:lot\s*size|lots?|volume)\s*(?::|=|is)?\s*{number}",
-        rf"(?<![-+\w.]){number}\s*(?:lots?|volume)\b",
-    )
-
-    matches = []
-    for pattern in patterns:
-        matches.extend(re.finditer(pattern, account_setup, flags=re.IGNORECASE))
-
-    for match in sorted(matches, key=lambda item: item.start()):
-        try:
-            lot_size = float(match.group("value"))
-        except (TypeError, ValueError):
-            continue
-
-        if math.isfinite(lot_size) and lot_size > 0:
-            return lot_size
-
-    return DEFAULT_LOT_SIZE
-
-def parse_acnologia_decision(text: str) -> dict[str, Any]:
+def parse_acnologia_decision(
+    text: str,
+    expected_lot_size: float,
+) -> dict[str, Any]:
     """
     Parse Acnologia's response.
 
@@ -420,7 +438,7 @@ def parse_acnologia_decision(text: str) -> dict[str, Any]:
     entry_price = parse_number("ENTRY PRICE")
     stop_loss = parse_number("STOP LOSS")
     take_profit = parse_number("TAKE PROFIT")
-    lot_size = parse_number("LOT SIZE")
+    reported_lot_size = parse_number("LOT SIZE")
 
     wait_timeframe_match = re.search(
         r"\bWAIT\s+TIMEFRAME\s*:\s*([A-Z0-9]+)\b",
@@ -455,10 +473,24 @@ def parse_acnologia_decision(text: str) -> dict[str, Any]:
                 f"{decision} requires TAKE PROFIT."
             )
 
-        if lot_size is None:
+        if reported_lot_size is None:
             raise RuntimeError(
                 f"{decision} requires LOT SIZE."
             )
+
+        if not math.isclose(
+            reported_lot_size,
+            expected_lot_size,
+            rel_tol=0.0,
+            abs_tol=1e-12,
+        ):
+            raise RuntimeError(
+                "Acnologia returned a LOT SIZE that does not match the runtime lot_size."
+            )
+    elif reported_lot_size is not None:
+        raise RuntimeError(
+            f"{decision} requires LOT SIZE: NONE."
+        )
 
     # LONG:
     # SL < ENTRY < TP
@@ -490,7 +522,7 @@ def parse_acnologia_decision(text: str) -> dict[str, Any]:
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
-        "lot_size": lot_size,
+        "lot_size": expected_lot_size,
         "wait_timeframe": wait_timeframe,
     }
 
@@ -508,8 +540,7 @@ async def trade_decision_node(state: TradingState):
     """
 
     analysis = state["market_analysis"]
-    account_setup = state["account_setup"]
-    lot_size = resolve_lot_size(account_setup)
+    lot_size = validate_lot_size(state.get("lot_size"))
 
     print("\n\n[GRAPH] ACNOLOGIA")
 
@@ -538,7 +569,7 @@ Market analysis:
 
     output = get_last_message_content(result)
 
-    trade = parse_acnologia_decision(output)
+    trade = parse_acnologia_decision(output, lot_size)
 
     print(f"\n[ACNOLOGIA DECISION: {trade['decision']}]")
     print(f"[CONFIDENCE: {trade['confidence']}]")
@@ -556,7 +587,7 @@ Market analysis:
         "entry_price": trade["entry_price"],
         "stop_loss": trade["stop_loss"],
         "take_profit": trade["take_profit"],
-        "lot_size": trade["lot_size"],
+        "lot_size": lot_size,
         "wait_timeframe": trade["wait_timeframe"],
         "decision_output": output,
     }
@@ -723,6 +754,7 @@ Return the action taken and the reason.
         "decision_output",
         "",
     )
+    lot_size = validate_lot_size(state.get("lot_size"))
 
     if decision not in {
         "LONG",
@@ -752,6 +784,9 @@ Symbol:
 Decision:
 {decision}
 
+Approved runtime lot size:
+{lot_size}
+
 Trade decision:
 
 {decision_output}
@@ -774,6 +809,9 @@ Before opening anything:
 Do not accidentally duplicate an existing position.
 
 Do not change the approved trading direction.
+
+Use the approved runtime lot size exactly as provided. Do not calculate or
+change it.
 
 Return the action taken and relevant execution information.
 """,

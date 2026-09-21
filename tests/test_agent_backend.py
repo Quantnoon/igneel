@@ -187,7 +187,11 @@ def load_agent_runner(monkeypatch, graph_error=None):
     backend.sync_memory = MagicMock()
 
     class Graph:
+        def __init__(self):
+            self.input_data = None
+
         async def ainvoke(self, *_args, **_kwargs):
+            self.input_data = _args[0]
             if graph_error is not None:
                 raise graph_error
 
@@ -212,19 +216,34 @@ def load_agent_runner(monkeypatch, graph_error=None):
 def test_successful_trader_run_syncs_memory(monkeypatch):
     runner, backend = load_agent_runner(monkeypatch)
 
-    asyncio.run(runner.run_trader())
+    asyncio.run(runner.run_trader("test-id", "XAUUSD", 0.01, "sma"))
 
     backend.initialize_memory.assert_called_once_with()
     backend.sync_memory.assert_called_once_with()
+    assert runner.trading_graph.input_data["lot_size"] == 0.01
 
 
 def test_failed_trader_run_does_not_sync_memory(monkeypatch):
     runner, backend = load_agent_runner(monkeypatch, graph_error=RuntimeError("graph failed"))
 
     with pytest.raises(RuntimeError, match="graph failed"):
-        asyncio.run(runner.run_trader())
+        asyncio.run(runner.run_trader("test-id", "XAUUSD", 0.01, "sma"))
 
     backend.initialize_memory.assert_called_once_with()
+    backend.sync_memory.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "lot_size",
+    (None, "0.01", True, 0, -0.01, float("nan"), float("inf")),
+)
+def test_run_trader_rejects_invalid_lot_size_before_graph_invocation(monkeypatch, lot_size):
+    runner, backend = load_agent_runner(monkeypatch)
+
+    with pytest.raises(ValueError, match="lot_size"):
+        asyncio.run(runner.run_trader("test-id", "XAUUSD", lot_size, "sma"))
+
+    backend.initialize_memory.assert_not_called()
     backend.sync_memory.assert_not_called()
 
 

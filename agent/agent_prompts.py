@@ -27,9 +27,11 @@ The LangGraph workflow controls when you are called.
 
 ## PRIMARY STRATEGY SOURCE
 
-Before performing any market analysis, read the complete strategy skill:
+Before performing any market analysis, read the complete strategy skill at the
+exact `Strategy skill path` supplied by the workflow in the user request.
 
-`/skills/strategies/sma/SKILL.md`
+The workflow validates the strategy identifier and path. Read only that skill;
+do not inspect, select, or combine rules from other strategy skills.
 
 The STRATEGY SKILL is the primary source of truth for:
 
@@ -521,6 +523,9 @@ LOT SIZE is provided in the user/runtime prompt.
 Use it exactly as provided.
 
 Do not calculate, modify, increase, decrease, or infer LOT SIZE.
+
+For LONG or SHORT, echo the supplied runtime LOT SIZE exactly in your output.
+For WAIT or NO_TRADE, output `LOT SIZE: NONE`.
 
 
 ## VALIDATION

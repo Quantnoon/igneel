@@ -5,6 +5,8 @@ from pathlib import Path
 import re
 from types import ModuleType
 
+import pytest
+
 from agent.agent_prompts import (
     ACNOLOGIA_SYSTEM_PROMPT,
     ATLAS_SYSTEM_PROMPT,
@@ -74,6 +76,61 @@ def test_agent_identities_are_renamed_consistently():
     assert "acnologia_agent = create_deep_agent" in source
     assert "ignia_agent = create_deep_agent" in source
     assert all(name in telemetry for name in ("Atlas", "Acnologia", "Ignia"))
+
+
+def test_atlas_prompt_uses_the_workflow_supplied_strategy_skill_path():
+    assert "Strategy skill path" in ATLAS_SYSTEM_PROMPT
+    assert "do not inspect, select, or combine rules from other strategy skills" in ATLAS_SYSTEM_PROMPT
+    assert "/skills/strategies/doji-candlestick-strategy/SKILL.md" not in ATLAS_SYSTEM_PROMPT
+
+
+def test_strategy_skill_resolver_maps_known_strategy_directories(monkeypatch):
+    nodes = load_agent_nodes(monkeypatch)
+
+    for strategy in (
+        "doji-candlestick-strategy",
+        "trendline",
+    ):
+        assert nodes.resolve_strategy_skill(strategy) == (
+            strategy,
+            f"/skills/strategies/{strategy}/SKILL.md",
+        )
+
+
+@pytest.mark.parametrize("strategy", (None, "", "../sma", "sma/SKILL.md", "unknown-strategy"))
+def test_strategy_skill_resolver_rejects_invalid_or_unknown_values(monkeypatch, strategy):
+    nodes = load_agent_nodes(monkeypatch)
+
+    with pytest.raises(ValueError):
+        nodes.resolve_strategy_skill(strategy)
+
+
+def test_market_analysis_passes_only_the_resolved_strategy_path_to_atlas(monkeypatch):
+    nodes = load_agent_nodes(monkeypatch)
+
+    class Atlas:
+        def __init__(self):
+            self.request = None
+
+        async def ainvoke(self, request):
+            self.request = request
+            message = type("Message", (), {"content": "analysis"})()
+            return {"messages": [message]}
+
+    atlas = Atlas()
+    nodes.atlas_agent = atlas
+
+    result = asyncio.run(nodes.market_analysis_node({
+        "symbol": "XAUUSD",
+        "strategy": "doji-candlestick-strategy",
+        "strategy_request": "Analyze a setup.",
+    }))
+
+    content = atlas.request["messages"][0]["content"]
+    assert result == {"market_analysis": "analysis"}
+    assert "Active strategy:\ndoji-candlestick-strategy" in content
+    assert "Strategy skill path:\n/skills/strategies/doji-candlestick-strategy/SKILL.md" in content
+    assert "do not read or combine rules from other strategy skills" in content
 
 
 def test_trade_decision_prompt_uses_bias_and_confidence_for_direction():
@@ -167,14 +224,14 @@ ENTRY PRICE: 100
 STOP LOSS: 99
 TAKE PROFIT: 102
 LOT SIZE: 0.01
-WAIT TIMEFRAME: M5""")
+WAIT TIMEFRAME: M5""", 0.01)
     short = nodes.parse_acnologia_decision("""DECISION: SHORT
 CONFIDENCE: MODERATE
 ENTRY PRICE: 100
 STOP LOSS: 101
 TAKE PROFIT: 98
 LOT SIZE: 0.01
-WAIT TIMEFRAME: M15""")
+WAIT TIMEFRAME: M15""", 0.01)
 
     assert long["decision"] == "LONG"
     assert short["decision"] == "SHORT"
@@ -184,27 +241,34 @@ def test_trade_decision_prompt_requires_no_trade_for_invalid_execution_levels():
     assert "If valid levels cannot be determined, return NO_TRADE." in ACNOLOGIA_SYSTEM_PROMPT
 
 
-def test_resolve_lot_size_extracts_common_prose_formats(monkeypatch):
+@pytest.mark.parametrize("value", (0.01, 1, 0.25))
+def test_validate_lot_size_accepts_positive_finite_numbers(monkeypatch, value):
     nodes = load_agent_nodes(monkeypatch)
 
-    assert nodes.resolve_lot_size("Use 0.01 volume when a trade is approved.") == 0.01
-    assert nodes.resolve_lot_size("Configured lot size: 0.02.") == 0.02
+    assert nodes.validate_lot_size(value) == float(value)
 
 
-def test_resolve_lot_size_uses_first_explicit_value(monkeypatch):
+@pytest.mark.parametrize("value", (None, "0.01", True, 0, -0.01, float("nan"), float("inf")))
+def test_validate_lot_size_rejects_missing_or_invalid_values(monkeypatch, value):
     nodes = load_agent_nodes(monkeypatch)
 
-    assert nodes.resolve_lot_size("Use 0.01 volume normally and 0.02 lots in London.") == 0.01
+    with pytest.raises(ValueError, match="lot_size"):
+        nodes.validate_lot_size(value)
 
 
-def test_resolve_lot_size_falls_back_for_missing_or_invalid_values(monkeypatch):
+def test_trade_decision_parser_rejects_lot_size_that_differs_from_runtime_value(monkeypatch):
     nodes = load_agent_nodes(monkeypatch)
 
-    for account_setup in ("Risk 1% per trade.", "Use 0 volume.", "Use -0.01 lots.", "Use lots."):
-        assert nodes.resolve_lot_size(account_setup) == 0.01
+    with pytest.raises(RuntimeError, match="does not match"):
+        nodes.parse_acnologia_decision("""DECISION: LONG
+CONFIDENCE: HIGH
+ENTRY PRICE: 100
+STOP LOSS: 99
+TAKE PROFIT: 102
+LOT SIZE: 0.02""", 0.01)
 
 
-def test_trade_decision_node_accepts_prose_account_setup(monkeypatch):
+def test_trade_decision_node_uses_runtime_lot_size(monkeypatch):
     nodes = load_agent_nodes(monkeypatch)
     captured = {}
 
@@ -234,14 +298,63 @@ LOT SIZE: NONE"""
         nodes.trade_decision_node(
             {
                 "market_analysis": "No entry signal.",
-                "account_setup": "Use 0.02 volume when a valid trade is approved.",
+                "lot_size": 0.02,
             }
         )
     )
 
     assert "LOT SIZE:\n0.02" in captured["messages"][0]["content"]
+    assert result["lot_size"] == 0.02
     assert result["decision"] == "NO_TRADE"
     assert result["wait_timeframe"] == "M15"
+
+
+def test_trade_decision_node_rejects_invalid_lot_size_before_calling_acnologia(monkeypatch):
+    nodes = load_agent_nodes(monkeypatch)
+
+    class DecisionAgent:
+        def __init__(self):
+            self.called = False
+
+        async def ainvoke(self, _payload):
+            self.called = True
+
+    agent = DecisionAgent()
+    monkeypatch.setattr(nodes, "acnologia_agent", agent)
+
+    with pytest.raises(ValueError, match="lot_size"):
+        asyncio.run(nodes.trade_decision_node({
+            "market_analysis": "No entry signal.",
+            "lot_size": 0,
+        }))
+
+    assert agent.called is False
+
+
+def test_order_manager_passes_runtime_lot_size_to_ignia(monkeypatch):
+    nodes = load_agent_nodes(monkeypatch)
+    captured = {}
+
+    class Ignia:
+        async def ainvoke(self, payload):
+            captured.update(payload)
+            message = type("Message", (), {"content": "order handled"})()
+            return {"messages": [message]}
+
+    monkeypatch.setattr(nodes, "ignia_agent", Ignia())
+
+    asyncio.run(nodes.order_manager_node({
+        "symbol": "XAUUSD",
+        "open_trades_exist": False,
+        "decision": "LONG",
+        "lot_size": 0.02,
+        "decision_output": "DECISION: LONG",
+        "market_analysis": "Qualified setup.",
+    }))
+
+    content = captured["messages"][0]["content"]
+    assert "Approved runtime lot size:\n0.02" in content
+    assert "Use the approved runtime lot size exactly as provided." in content
 
 
 def test_trade_decision_node_stores_valid_wait_timeframe(monkeypatch):
@@ -271,7 +384,7 @@ WAIT TIMEFRAME: m5"""
 
     result = asyncio.run(
         nodes.trade_decision_node(
-            {"market_analysis": "Await M5 confirmation.", "account_setup": "Use 0.01 volume."}
+            {"market_analysis": "Await M5 confirmation.", "lot_size": 0.01}
         )
     )
 
@@ -287,8 +400,8 @@ STOP LOSS: NONE
 TAKE PROFIT: NONE
 LOT SIZE: NONE"""
 
-    assert nodes.parse_acnologia_decision(output)["wait_timeframe"] == "M15"
-    assert nodes.parse_acnologia_decision(output + "\nWAIT TIMEFRAME: S5")["wait_timeframe"] == "M15"
+    assert nodes.parse_acnologia_decision(output, 0.01)["wait_timeframe"] == "M15"
+    assert nodes.parse_acnologia_decision(output + "\nWAIT TIMEFRAME: S5", 0.01)["wait_timeframe"] == "M15"
 
 
 def test_wait_market_node_uses_state_timeframe(monkeypatch):

@@ -11,6 +11,7 @@ langchain-openai
 tavily-python
 requests
 beautifulsoup4
+questionary
 ./pkg/price_data-1.1.2-py3-none-any.whl
 ./pkg/technical_indicator-2.0.8-py3-none-any.whl
 ./pkg/backtest_engine-1.2.0-py3-none-any.whl

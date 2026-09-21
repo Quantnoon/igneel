@@ -1,37 +1,39 @@
-import sys
-from pathlib import Path
+import math
 
-if __package__ in {None, ""}:
-    project_root = Path(__file__).resolve().parent.parent
-    sys.path.insert(0, str(project_root))
-
-import asyncio
-
-from agent.agent_backend import initialize_memory, shutdown_sandbox, sync_memory
+from agent.agent_backend import initialize_memory, sync_memory
 from agent.agent_graph import trading_graph
-from agent.agent_tools import print_agent_event, connect_mt5_terminal
-
-sys.stdout.reconfigure(encoding="utf-8")
 
 
-config = {
-    "configurable": {
-        "thread_id": "market-monitor",
-    },
-    "recursion_limit": 10000
-}
+def validate_lot_size(value: object) -> float:
+    """Return a positive, finite runtime lot size."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("lot_size must be a positive finite number.")
 
-async def run_trader():
+    lot_size = float(value)
+    if not math.isfinite(lot_size) or lot_size <= 0:
+        raise ValueError("lot_size must be a positive finite number.")
+
+    return lot_size
+
+
+async def run_trader(id, symbol, lot_size, strategy):
+    lot_size = validate_lot_size(lot_size)
+
     input_data = {
-        "symbol": "BTCUSD",
-
-        "account_setup": (
-            "Use 0.01 volume when a valid trade is approved."
-        ),
-
+        "symbol": symbol,
+        "goal": "Grow this account in a short period of time",
+        "lot_size": lot_size,
+        "strategy": strategy,
         # Initial graph state
         "open_trades_exist": False,
         "open_trades": [],
+    }
+
+    config = {
+        "configurable": {
+            "thread_id": id,
+        },
+        "recursion_limit": 10000
     }
 
     initialize_memory()
@@ -42,22 +44,4 @@ async def run_trader():
         version="v2",
     )
     sync_memory()
-
-
-if __name__ == "__main__":
-    try:
-        connection_result = connect_mt5_terminal()
-        if not connection_result.get("success", False):
-            raise RuntimeError("Unable to connect to MetaTrader 5.")
-
-        asyncio.run(
-            run_trader()
-        )
-    except Exception as e:
-        if "content-blocked" in str(e):
-            print(e)
-        else:
-            raise
-    finally:
-        shutdown_sandbox()
 
