@@ -5,9 +5,10 @@ from agent.agent_tools import (
     close_trade,
     get_account_snapshot,
     get_open_trades,
-    get_price_data,
+    get_symbol_specification,
     modify_trade,
     place_trade,
+    get_price_data_file
 )
 
 from agent.agent_models import get_openai_model
@@ -29,11 +30,10 @@ atlas_agent = create_deep_agent(
     model=model,
     system_prompt=ATLAS_SYSTEM_PROMPT,
     backend=backend_with_sandbox,
-    skills=["/skills/"],
     store=store,
     memory=["/memory/AGENTS.md"],
     tools=[
-        get_price_data,
+        get_price_data_file,
         web_search,
         fetch_url,
     ],
@@ -43,12 +43,14 @@ atlas_agent = create_deep_agent(
 acnologia_agent = create_deep_agent(
     model=model,
     system_prompt=ACNOLOGIA_SYSTEM_PROMPT,
-    backend=backend,
-    skills=["/skills/technical-indicators/"],
+    backend=backend_with_sandbox,
     store=store,
     memory=["/memory/AGENTS.md"],
     tools=[
-        get_price_data
+        get_price_data_file,
+        get_symbol_specification,
+        web_search,
+        fetch_url,
     ],
 )
 
@@ -61,13 +63,15 @@ grandine_subagent = {
         "or CLOSE_ORDER. Grandine never executes broker actions."
     ),
     "system_prompt": GRANDINE_SYSTEM_PROMPT,
-    "skills": ["/skills/technical-indicators/"],
     "store": store,
     "memory": ["/memory/AGENTS.md"],
+    "backend": backend_with_sandbox,
     "tools": [
-        get_price_data,
+        get_price_data_file,
         get_open_trades,
         get_account_snapshot,
+        web_search,
+        fetch_url,
     ],
     "model": model,
 }

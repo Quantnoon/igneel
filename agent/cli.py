@@ -14,14 +14,6 @@ from agent.agent_backend import shutdown_sandbox
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-STRATEGIES = {
-    "SAM Strategy": "sma",
-    "Trendline Strategy": "trendline",
-    "doji Candlestick Strategy": "doji-candlestick-strategy",
-    "liquidity Sweep": "liquidity-sweep"
-}
-
-
 def main():
     identifier = questionary.text(
         "Enter your unique identifier:",
@@ -29,15 +21,17 @@ def main():
     ).ask()
 
     symbol = questionary.text(
-        "Select symbol:"
+        "Select symbol:",
+        default="Volatility 10 Index"
     ).ask()
 
-    strategy_name = questionary.select(
-        "Select strategy:",
-        choices=list(STRATEGIES.keys()),
+    goal = questionary.text(
+        "Enter the trading goal/task:",
+        default="scalp the market. grow the account in show period",
+        validate=lambda value: (
+            True if is_valid_goal(value) else "Enter a non-empty trading goal"
+        ),
     ).ask()
-
-    strategy_key = STRATEGIES[strategy_name]
 
     lot_size_text = questionary.text(
         "Enter lot size:",
@@ -52,15 +46,14 @@ def main():
     config = {
         "identifier": identifier,
         "symbol": symbol,
-        "strategy": strategy_key,
+        "goal": goal.strip(),
         "lot_size": lot_size,
     }
 
     print("\nConfiguration")
     print(f"Identifier: {config['identifier']}")
     print(f"Symbol:     {config['symbol']}")
-    print(f"Strategy:   {strategy_name}")
-    print(f"Key:        {config['strategy']}")
+    print(f"Goal:       {config['goal']}")
     print(f"Lot size:   {config['lot_size']}")
 
     start = questionary.confirm(
@@ -78,7 +71,7 @@ def main():
                 run_trader(
                     id=identifier,
                     symbol=symbol,
-                    strategy=strategy_key,
+                    goal=config["goal"],
                     lot_size=config["lot_size"],
                 )
             )
@@ -97,6 +90,10 @@ def is_valid_lot_size(value):
         return math.isfinite(lot_size) and lot_size > 0
     except (TypeError, ValueError):
         return False
+
+
+def is_valid_goal(value):
+    return isinstance(value, str) and bool(value.strip())
 
 
 if __name__ == "__main__":

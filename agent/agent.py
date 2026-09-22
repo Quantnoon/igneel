@@ -16,14 +16,14 @@ def validate_lot_size(value: object) -> float:
     return lot_size
 
 
-async def run_trader(id, symbol, lot_size, strategy):
+async def run_trader(id, symbol, lot_size, goal):
     lot_size = validate_lot_size(lot_size)
+    goal = validate_goal(goal)
 
     input_data = {
         "symbol": symbol,
-        "goal": "Grow this account in a short period of time",
+        "goal": goal,
         "lot_size": lot_size,
-        "strategy": strategy,
         # Initial graph state
         "open_trades_exist": False,
         "open_trades": [],
@@ -44,4 +44,11 @@ async def run_trader(id, symbol, lot_size, strategy):
         version="v2",
     )
     sync_memory()
+
+
+def validate_goal(value: object) -> str:
+    """Return a required, normalized trading goal."""
+    if not isinstance(value, str) or not (goal := value.strip()):
+        raise ValueError("goal must be a non-empty trading task.")
+    return goal
 

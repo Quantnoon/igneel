@@ -1,8 +1,11 @@
 """MT5-facing tools exposed to the autonomous trading agent."""
 
+import io
 import math
 import re
 import time
+import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from dotenv import load_dotenv
 
@@ -24,6 +27,7 @@ from pathlib import Path
 import os
 
 from agent.paths import AGENT_TOOL_EVENTS_LOG_PATH, ENV_FILE
+from agent.agent_backend import sandbox_backend
 
 load_dotenv(ENV_FILE)
 
@@ -211,19 +215,21 @@ def get_price_data(symbols: list[str], timeframes: list[str], date_range: str, s
     return failure if failure else _dataframe_to_markdown(candles)
 
 
-def get_compact_price_data(symbols: list[str], timeframes: list[str], date_range: str, symbol: str, indicators: list[dict], recent_rows: int = 192):
+def get_compact_price_data(symbols: list[str], timeframes: list[str], date_range: str, symbol: str, indicators: list[dict], recent_rows: int = 192, use_cache: bool = True):
     """Return recent merged price data as compact JSON-safe columns and rows for agent analysis."""
     normalized, failure = _normalized_price_request(symbols, timeframes, date_range, symbol, indicators)
     if failure:
         return failure
     if not isinstance(recent_rows, int) or isinstance(recent_rows, bool) or not 1 <= recent_rows <= 500:
         return _request_error(_request_metadata(symbols, timeframes, date_range, symbol), "recent_rows must be an integer from 1 to 500.", stage="request_validation")
+    if not isinstance(use_cache, bool):
+        return _request_error(_request_metadata(symbols, timeframes, date_range, symbol), "use_cache must be a boolean.", stage="request_validation")
     normalized_symbols, normalized_timeframes, normalized_date_range, normalized_symbol = normalized
     metadata = _request_metadata(normalized_symbols, normalized_timeframes, normalized_date_range, normalized_symbol)
     cache_key = (tuple(normalized_symbols), tuple(normalized_timeframes), normalized_date_range, normalized_symbol, repr(indicators))
     bucket = int(time.time() // _COMPACT_CACHE_SECONDS)
     cached = _compact_price_cache.get(cache_key)
-    if cached and cached[0] == bucket:
+    if use_cache and cached and cached[0] == bucket:
         candles = cached[1]
     else:
         candles, failure = _load_price_frame(normalized_symbols, normalized_timeframes, normalized_date_range, normalized_symbol, indicators, metadata)
@@ -347,6 +353,56 @@ def get_account_snapshot():
         return {"success": True, "data": {"balance": float(account_info.balance), "equity": float(account_info.equity), "profit": float(account_info.profit), "currency": str(account_info.currency)}, "error": None}
     except Exception as error:
         return {"success": False, "data": None, "error": {"code": None, "message": str(error) or "Unable to read MT5 account information."}}
+
+
+def get_symbol_specification(symbol: str):
+    """Return broker point, digits, and minimum stop distance for ``symbol``."""
+    if not isinstance(symbol, str) or not symbol.strip():
+        return _tool_failure("symbol must be a non-empty string.")
+
+    symbol = symbol.strip()
+    if not is_connected():
+        connection_result = connect_mt5_terminal()
+        if not connection_result.get("success", False):
+            return _tool_failure("MetaTrader 5 connection failed while reading symbol specification.")
+
+    try:
+        symbol_info = mt5.symbol_info(symbol)
+        if symbol_info is None:
+            return _tool_failure("Broker symbol specification is unavailable.")
+
+        digits = getattr(symbol_info, "digits", None)
+        point = getattr(symbol_info, "point", None)
+        stops_level = getattr(symbol_info, "trade_stops_level", None)
+        if (
+            isinstance(digits, bool)
+            or not isinstance(digits, int)
+            or digits < 0
+            or isinstance(point, bool)
+            or not isinstance(point, (int, float))
+            or not math.isfinite(point)
+            or point <= 0
+            or isinstance(stops_level, bool)
+            or not isinstance(stops_level, (int, float))
+            or not math.isfinite(stops_level)
+            or stops_level < 0
+        ):
+            return _tool_failure("Broker symbol specification contains invalid point, digits, or minimum stop data.")
+
+        point = float(point)
+        return {
+            "success": True,
+            "data": {
+                "symbol": symbol,
+                "digits": digits,
+                "point": point,
+                "trade_stops_level": float(stops_level),
+                "minimum_stop_distance": float(stops_level) * point,
+            },
+            "error": None,
+        }
+    except Exception as error:
+        return _tool_failure(str(error) or "Unable to read broker symbol specification.")
 
 
 import json
@@ -593,39 +649,6 @@ def print_agent_event(event):
         if name == "task":
             TASK_RUNS.pop(run_id, None)
 
-import MetaTrader5 as mt5
-
-
-TIMEFRAME_MAP = {
-    "D1": mt5.TIMEFRAME_D1,
-    "H4": mt5.TIMEFRAME_H4,
-    "H1": mt5.TIMEFRAME_H1,
-    "M15": mt5.TIMEFRAME_M15,
-    "M5": mt5.TIMEFRAME_M5,
-    "M1": mt5.TIMEFRAME_M1,
-}
-
-
-def get_latest_candle_time(
-    symbol: str,
-    timeframe: str,
-):
-    mt5_timeframe = TIMEFRAME_MAP[timeframe]
-
-    rates = mt5.copy_rates_from_pos(
-        symbol,
-        mt5_timeframe,
-        0,
-        1,
-    )
-
-    if rates is None or len(rates) == 0:
-        raise RuntimeError(
-            f"Unable to retrieve {symbol} {timeframe} candle."
-        )
-
-    return int(rates[-1]["time"])
-
 import asyncio
 from langchain_core.tools import tool
 
@@ -638,6 +661,68 @@ VALID_TIMEFRAMES = {
     "M5",
     "M1",
 }
+
+_TIMEFRAME_DURATIONS = {
+    "M1": timedelta(minutes=1),
+    "M5": timedelta(minutes=5),
+    "M15": timedelta(minutes=15),
+    "H1": timedelta(hours=1),
+    "H4": timedelta(hours=4),
+    "D1": timedelta(days=1),
+    "W1": timedelta(weeks=1),
+}
+
+
+def _get_latest_compact_candle_time(symbol: str, timeframe: str) -> str:
+    """Fetch one uncached candle through the shared market-data interface."""
+    result = get_compact_price_data(
+        symbols=[symbol],
+        timeframes=[timeframe],
+        date_range="1D",
+        symbol=symbol,
+        indicators=[],
+        recent_rows=1,
+        use_cache=False,
+    )
+    if not isinstance(result, dict) or not result.get("success"):
+        raise RuntimeError("Unable to retrieve current candle data.")
+
+    rows = result.get("rows")
+    if not isinstance(rows, list) or not rows:
+        raise RuntimeError("Current candle data contains no rows.")
+
+    latest_row = rows[-1]
+    if not isinstance(latest_row, list) or not latest_row or latest_row[0] is None:
+        raise RuntimeError("Current candle data has no usable timestamp.")
+
+    return str(latest_row[0])
+
+
+def _seconds_until_next_candle(
+    candle_time: str,
+    timeframe: str,
+    *,
+    now: datetime | None = None,
+) -> float:
+    """Return the delay until the next candle boundary in UTC."""
+    try:
+        candle_start = datetime.fromisoformat(candle_time.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise RuntimeError("Current candle has an invalid timestamp.") from exc
+
+    if candle_start.tzinfo is None:
+        candle_start = candle_start.replace(tzinfo=timezone.utc)
+
+    duration = _TIMEFRAME_DURATIONS.get(timeframe)
+    if duration is None:
+        raise RuntimeError(f"Unsupported timeframe: {timeframe}")
+
+    current_time = now or datetime.now(timezone.utc)
+    if current_time.tzinfo is None:
+        current_time = current_time.replace(tzinfo=timezone.utc)
+
+    next_candle_time = candle_start.astimezone(timezone.utc) + duration
+    return max(0.0, (next_candle_time - current_time.astimezone(timezone.utc)).total_seconds())
 
 
 @tool
@@ -663,7 +748,7 @@ async def wait_for_market_update(
         }
 
     try:
-        previous_time = get_latest_candle_time(
+        previous_time = _get_latest_compact_candle_time(
             symbol=symbol,
             timeframe=timeframe,
         )
@@ -673,10 +758,14 @@ async def wait_for_market_update(
             f"current candle: {previous_time}"
         )
 
-        while True:
-            await asyncio.sleep(poll_seconds)
+        seconds_until_boundary = _seconds_until_next_candle(
+            previous_time,
+            timeframe,
+        )
+        await asyncio.sleep(seconds_until_boundary)
 
-            current_time = get_latest_candle_time(
+        while True:
+            current_time = _get_latest_compact_candle_time(
                 symbol=symbol,
                 timeframe=timeframe,
             )
@@ -697,6 +786,8 @@ async def wait_for_market_update(
                     "new_candle_time": str(current_time),
                 }
 
+            await asyncio.sleep(max(poll_seconds, 1))
+
     except Exception as exc:
         return {
             "success": False,
@@ -705,3 +796,103 @@ async def wait_for_market_update(
             "timeframe": timeframe,
             "error": str(exc),
         }
+
+
+def _safe_sandbox_filename_component(value: str) -> str:
+    """Return a filename-safe representation without changing request metadata."""
+    return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+
+
+def get_price_data_file(
+    symbol: str,
+    timeframes: list[str],
+    date_range: str,
+):
+    """
+    Retrieve raw market price data and upload it to the sandbox.
+
+    Returns the sandbox file path and dataset metadata. The CSV is a merged
+    frame with ``time`` and, for every requested timeframe ``tf``, the columns
+    ``open_{tf}``, ``high_{tf}``, ``low_{tf}``, and ``close_{tf}``, where
+    ``tf`` is one of M1, M5, M15, H1, H4, D1, or W1. Consumers must select
+    the four suffixed OHLC columns for each timeframe independently; rows can
+    be absent for an individual timeframe in the merged frame.
+    """
+    normalized, failure = _normalized_price_request(
+        [symbol], timeframes, date_range, symbol, []
+    )
+    if failure:
+        return failure
+
+    normalized_symbols, normalized_timeframes, normalized_date_range, normalized_symbol = normalized
+    metadata = _request_metadata(
+        normalized_symbols,
+        normalized_timeframes,
+        normalized_date_range,
+        normalized_symbol,
+    )
+    df, failure = _load_price_frame(
+        normalized_symbols,
+        normalized_timeframes,
+        normalized_date_range,
+        normalized_symbol,
+        [],
+        metadata,
+    )
+    if failure:
+        return failure
+
+    filename = (
+        f"{_safe_sandbox_filename_component(normalized_symbol)}_"
+        f"{_safe_sandbox_filename_component(normalized_date_range)}_"
+        f"{uuid.uuid4().hex[:8]}.csv"
+    )
+
+    path = f"/workspace/market/{filename}"
+
+    buffer = io.BytesIO()
+
+    try:
+        df.to_csv(
+            buffer,
+            index=False,
+        )
+    except Exception:
+        return _request_error(
+            metadata,
+            "Unable to serialize price data for the sandbox.",
+            stage="serialization",
+        )
+
+    try:
+        upload_responses = sandbox_backend.upload_files([
+            (
+                path,
+                buffer.getvalue(),
+            )
+        ])
+    except Exception:
+        return _request_error(
+            metadata,
+            "Unable to upload price data to the sandbox.",
+            stage="sandbox_upload",
+        )
+
+    if (
+        not isinstance(upload_responses, list)
+        or len(upload_responses) != 1
+        or getattr(upload_responses[0], "error", None) is not None
+    ):
+        return _request_error(
+            metadata,
+            "Unable to upload price data to the sandbox.",
+            stage="sandbox_upload",
+        )
+
+    return {
+        "success": True,
+        "path": path,
+        **metadata,
+        "rows": len(df),
+        "columns": list(df.columns),
+    }
