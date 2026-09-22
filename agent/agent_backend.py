@@ -50,13 +50,33 @@ def _create_langsmith_sandbox() -> tuple[SandboxClient, object]:
 
     client = SandboxClient(api_key=api_key)
     try:
-        return client, client.create_sandbox()
+        sandbox = client.create_sandbox()
     except SandboxAuthenticationError as exc:
         client.close()
         raise RuntimeError(
             "Unable to authenticate Atlas's LangSmith sandbox. Verify that "
             "LANGSMITH_API_KEY is valid and has sandbox access."
         ) from exc
+
+    try:
+        result = sandbox.run(
+            'python3 -m pip install --no-cache-dir pandas numpy --break-system-packages && python3 -c "import pandas, numpy; print(pandas.__version__)"',
+            timeout=120,
+        )
+        if not result.success:
+            raise RuntimeError("Pandas installation command exited unsuccessfully.")
+    except Exception as exc:
+        try:
+            sandbox.delete()
+        except Exception:
+            pass
+        finally:
+            client.close()
+        raise RuntimeError(
+            "Unable to install pandas and numpy in the LangSmith sandbox."
+        ) from exc
+
+    return client, sandbox
 
 
 sandbox_client, ls_sandbox = _create_langsmith_sandbox()

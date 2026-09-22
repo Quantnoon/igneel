@@ -52,7 +52,7 @@ def test_cli_lot_size_validation_rejects_invalid_values(monkeypatch, value):
 
 def test_cli_passes_converted_lot_size_to_runner(monkeypatch):
     cli, questionary = load_cli(monkeypatch)
-    text_answers = iter(("test-id", "XAUUSD", "0.01"))
+    text_answers = iter(("test-id", "XAUUSD", "Protect capital", "0.01"))
 
     class Prompt:
         def __init__(self, answer):
@@ -62,7 +62,6 @@ def test_cli_passes_converted_lot_size_to_runner(monkeypatch):
             return self.answer
 
     questionary.text = lambda *_args, **_kwargs: Prompt(next(text_answers))
-    questionary.select = lambda *_args, **_kwargs: Prompt("liquidity Sweep")
     questionary.confirm = lambda *_args, **_kwargs: Prompt(True)
     captured = {}
 
@@ -74,3 +73,16 @@ def test_cli_passes_converted_lot_size_to_runner(monkeypatch):
 
     assert captured["lot_size"] == 0.01
     assert isinstance(captured["lot_size"], float)
+    assert captured["goal"] == "Protect capital"
+
+
+@pytest.mark.parametrize("value", ("Protect capital", "  Seek steady growth  "))
+def test_cli_goal_validation_accepts_non_empty_text(monkeypatch, value):
+    cli, _ = load_cli(monkeypatch)
+    assert cli.is_valid_goal(value) is True
+
+
+@pytest.mark.parametrize("value", (None, "", "   ", 1))
+def test_cli_goal_validation_rejects_blank_or_non_text(monkeypatch, value):
+    cli, _ = load_cli(monkeypatch)
+    assert cli.is_valid_goal(value) is False

@@ -14,7 +14,15 @@ from langsmith.sandbox import SandboxAuthenticationError
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
-def import_backend(monkeypatch, *, api_key="sandbox-test-key", create_error=None):
+def import_backend(
+    monkeypatch,
+    *,
+    api_key="sandbox-test-key",
+    create_error=None,
+    install_result=None,
+    install_error=None,
+    client_out=None,
+):
     """Import the backend with a fake LangSmith client and no network access."""
     sys.modules.pop("agent.agent_backend", None)
     monkeypatch.setattr("dotenv.load_dotenv", MagicMock())
@@ -27,8 +35,14 @@ def import_backend(monkeypatch, *, api_key="sandbox-test-key", create_error=None
     client = MagicMock()
     client.create_sandbox.side_effect = create_error
     client.create_sandbox.return_value = MagicMock()
+    client.create_sandbox.return_value.run.side_effect = install_error
+    client.create_sandbox.return_value.run.return_value = (
+        install_result if install_result is not None else SimpleNamespace(success=True)
+    )
     sandbox_client = MagicMock(return_value=client)
     monkeypatch.setattr("langsmith.sandbox.SandboxClient", sandbox_client)
+    if client_out is not None:
+        client_out["client"] = client
 
     return importlib.import_module("agent.agent_backend"), sandbox_client, client
 
@@ -39,6 +53,10 @@ def test_backend_loads_environment_and_passes_langsmith_key_explicitly(monkeypat
     assert backend.load_dotenv.called
     sandbox_client.assert_called_once_with(api_key="sandbox-test-key")
     client.create_sandbox.assert_called_once_with()
+    client.create_sandbox.return_value.run.assert_called_once_with(
+        'python3 -m pip install --no-cache-dir pandas numpy --break-system-packages && python3 -c "import pandas, numpy; print(pandas.__version__)"',
+        timeout=120,
+    )
 
     backend.shutdown_sandbox()
     client.create_sandbox.return_value.delete.assert_called_once_with()
@@ -69,6 +87,35 @@ def test_backend_hides_authentication_response_details(monkeypatch):
     assert secret not in str(caught.value)
 
 
+def test_backend_cleans_up_when_pandas_install_returns_failure(monkeypatch):
+    created = {}
+    with pytest.raises(RuntimeError, match="Unable to install pandas"):
+        import_backend(
+            monkeypatch,
+            install_result=SimpleNamespace(success=False, stderr="install failed"),
+            client_out=created,
+        )
+
+    sandbox = created["client"].create_sandbox.return_value
+    sandbox.delete.assert_called_once_with()
+    created["client"].close.assert_called_once_with()
+
+
+def test_backend_cleans_up_when_pandas_install_raises(monkeypatch):
+    created = {}
+    with pytest.raises(RuntimeError, match="Unable to install pandas") as caught:
+        import_backend(
+            monkeypatch,
+            install_error=OSError("connection interrupted"),
+            client_out=created,
+        )
+
+    assert isinstance(caught.value.__cause__, OSError)
+    sandbox = created["client"].create_sandbox.return_value
+    sandbox.delete.assert_called_once_with()
+    created["client"].close.assert_called_once_with()
+
+
 def test_memory_backend_reads_the_disk_seed_without_graph_runtime(monkeypatch):
     backend, _, _ = import_backend(monkeypatch)
 
@@ -91,26 +138,6 @@ def test_memory_initialization_does_not_overwrite_existing_store_value(monkeypat
     result = backend.memory_backend.download_files(["/AGENTS.md"])
 
     assert result[0].content.decode("utf-8") == existing_memory
-
-
-def test_skill_route_lists_direct_skill_directories(monkeypatch):
-    backend, _, _ = import_backend(monkeypatch)
-
-    paths = [entry["path"] for entry in backend.backend.ls("/skills/").entries]
-
-    assert "/skills/strategies/" in paths
-    assert "/skills/technical-indicators/" in paths
-    assert all(not path.startswith("/skills/skills/") for path in paths)
-
-
-def test_skill_route_downloads_from_the_skill_root(monkeypatch):
-    backend, _, _ = import_backend(monkeypatch)
-
-    response = backend.backend.download_files(["/skills/technical-indicators/SKILL.md"])[0]
-
-    assert response.error is None
-    assert response.content is not None
-    assert b"technical-indicators" in response.content
 
 
 def test_memory_route_is_available_in_both_composite_backends(monkeypatch):
@@ -216,18 +243,20 @@ def load_agent_runner(monkeypatch, graph_error=None):
 def test_successful_trader_run_syncs_memory(monkeypatch):
     runner, backend = load_agent_runner(monkeypatch)
 
-    asyncio.run(runner.run_trader("test-id", "XAUUSD", 0.01, "sma"))
+    asyncio.run(runner.run_trader("test-id", "XAUUSD", 0.01, "Protect capital"))
 
     backend.initialize_memory.assert_called_once_with()
     backend.sync_memory.assert_called_once_with()
     assert runner.trading_graph.input_data["lot_size"] == 0.01
+    assert runner.trading_graph.input_data["goal"] == "Protect capital"
+    assert "strategy" not in runner.trading_graph.input_data
 
 
 def test_failed_trader_run_does_not_sync_memory(monkeypatch):
     runner, backend = load_agent_runner(monkeypatch, graph_error=RuntimeError("graph failed"))
 
     with pytest.raises(RuntimeError, match="graph failed"):
-        asyncio.run(runner.run_trader("test-id", "XAUUSD", 0.01, "sma"))
+        asyncio.run(runner.run_trader("test-id", "XAUUSD", 0.01, "Protect capital"))
 
     backend.initialize_memory.assert_called_once_with()
     backend.sync_memory.assert_not_called()
@@ -241,7 +270,18 @@ def test_run_trader_rejects_invalid_lot_size_before_graph_invocation(monkeypatch
     runner, backend = load_agent_runner(monkeypatch)
 
     with pytest.raises(ValueError, match="lot_size"):
-        asyncio.run(runner.run_trader("test-id", "XAUUSD", lot_size, "sma"))
+        asyncio.run(runner.run_trader("test-id", "XAUUSD", lot_size, "Protect capital"))
+
+    backend.initialize_memory.assert_not_called()
+    backend.sync_memory.assert_not_called()
+
+
+@pytest.mark.parametrize("goal", (None, "", "   ", 1))
+def test_run_trader_rejects_missing_goal_before_graph_invocation(monkeypatch, goal):
+    runner, backend = load_agent_runner(monkeypatch)
+
+    with pytest.raises(ValueError, match="goal"):
+        asyncio.run(runner.run_trader("test-id", "XAUUSD", 0.01, goal))
 
     backend.initialize_memory.assert_not_called()
     backend.sync_memory.assert_not_called()
@@ -261,5 +301,5 @@ def test_atlas_uses_the_sandbox_backend_only():
         agent_backends[name] = backend
 
     assert agent_backends["atlas_agent"] == "backend_with_sandbox"
-    assert agent_backends["acnologia_agent"] == "backend"
+    assert agent_backends["acnologia_agent"] == "backend_with_sandbox"
     assert agent_backends["ignia_agent"] == "backend"

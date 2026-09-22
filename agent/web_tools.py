@@ -44,7 +44,7 @@ def _remember(cache: dict, key, value) -> None:
 
 
 def web_search(query: str, max_results: int = 5) -> dict:
-    """Search the web for current market context and trading strategy sources."""
+    """Search the web for market context and goal-relevant trading material."""
     query = " ".join(query.split())
     if not query:
         return {"success": False, "error": "Search query must not be empty.", "results": []}
