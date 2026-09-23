@@ -26,10 +26,6 @@ agent_filesystem_backend = FilesystemBackend(
     root_dir=str(AGENT_ROOT)
 )
 
-skills_backend = FilesystemBackend(
-    root_dir=str(SKILLS_ROOT)
-)
-
 memory_backend = StoreBackend(
     store=store,
     namespace=lambda _rt: (
@@ -90,7 +86,6 @@ backend_with_sandbox = CompositeBackend(
     default=sandbox_backend,
     routes={
         "/memory/": memory_backend,
-        "/skills/": skills_backend,
     },
 )
 
@@ -99,7 +94,6 @@ backend = CompositeBackend(
     default=agent_filesystem_backend,
     routes={
         "/memory/": memory_backend,
-        "/skills/": skills_backend,
     },
 )
 

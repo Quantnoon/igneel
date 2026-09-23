@@ -19,7 +19,7 @@ load_dotenv(ENV_FILE)
 
 _CACHE_SECONDS = 60 * 60
 _MAX_PAGE_BYTES = 2_000_000
-_MAX_PAGE_CHARS = 50_000
+_MAX_PAGE_CHARS = 100_000
 _MAX_REDIRECTS = 5
 _cache_lock = Lock()
 _search_cache: dict[tuple[str, int], tuple[float, dict]] = {}
