@@ -78,7 +78,7 @@ def sr_entry(df, i):
             zone = high_range * 100 / zone_range
 
             if zone < 50:
-                return "sell", resistance_high[i], None
+                return "sell", resistance_high[i]
 
         if high[i] < support_high[i] and low[i] > support_low[i] and support_high[i] < resistance_low[i]:
             zone_range = support_high[i] - support_low[i]
@@ -88,9 +88,9 @@ def sr_entry(df, i):
             zone = high_range * 100 / zone_range
 
             if zone > 50:
-                return "buy", support_low[i], None
+                return "buy", support_low[i]
         
-    return None, None, None
+    return None, None
 
 def sr_exit(df, i, pos):
     support_high = df["support_high_H4"].values
