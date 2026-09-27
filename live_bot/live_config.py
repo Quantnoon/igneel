@@ -2,11 +2,17 @@ from live_bot.signals import sd_entry, sd_exit, sr_entry, sr_exit, get_test_sign
 from dotenv import load_dotenv
 from pathlib import Path
 import os
+import sys
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+if getattr(sys, "frozen", False):
+    _env_path = Path(sys.executable).resolve().parent / ".env"
+else:
+    _env_path = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(_env_path)
 
 _deployments = {
     "sd_bot": {
+        "name": "sd_bot",
         "auth": {
             "login": int(os.environ["DERIV_LOGIN"]),
             "password": os.environ["DERIV_PASSWORD"],

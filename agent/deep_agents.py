@@ -8,7 +8,7 @@ from agent.agent_tools import (
     get_symbol_specification,
     modify_trade,
     place_trade,
-    get_price_data_file
+    get_price_data_file,
 )
 
 from agent.agent_models import get_openai_model
@@ -20,7 +20,7 @@ from deepagents import create_deep_agent
 from agent.agent_prompts import ATLAS_SYSTEM_PROMPT, ACNOLOGIA_SYSTEM_PROMPT, IGNIA_SYSTEM_PROMPT, GRANDINE_SYSTEM_PROMPT
 from agent.agent_backend import store, backend, backend_with_sandbox
 
-model = get_openai_model("gpt-5.6-luna")
+model = get_openai_model()
 
 # ============================================================
 # SPECIALIST DEEP AGENTS
@@ -57,10 +57,10 @@ acnologia_agent = create_deep_agent(
 grandine_subagent = {
     "name": "Grandine",
     "description": (
-        "Analyze each existing position for Ignia. Calculate its P/L as a "
-        "percentage of account equity and, at or beyond -5% or +5%, retrieve "
-        "fresh indicator-backed price data and recommend HOLD, MODIFY_ORDER, "
-        "or CLOSE_ORDER. Grandine never executes broker actions."
+        "Offline position-risk specialist for Ignia. For every existing "
+        "position, use fresh sandbox price analysis plus broker facts to "
+        "recommend HOLD, MODIFY_ORDER, or CLOSE_ORDER. Grandine never "
+        "executes broker actions."
     ),
     "system_prompt": GRANDINE_SYSTEM_PROMPT,
     "store": store,
@@ -70,8 +70,7 @@ grandine_subagent = {
         get_price_data_file,
         get_open_trades,
         get_account_snapshot,
-        web_search,
-        fetch_url,
+        get_symbol_specification,
     ],
     "model": model,
 }

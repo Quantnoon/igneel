@@ -82,3 +82,21 @@ def test_chart_indicators_resolves_candlestick_pattern_outputs():
         {"type": "CDLENGULFING", "columns": ["cdlengulfing_H1"]},
         {"type": "CDLDOJI", "columns": ["cdldoji_H1"]},
     ]
+
+
+def test_chart_indicators_includes_consolidation_hotspot_fields():
+    backtest = importlib.import_module("backtest.backtest_tools")
+
+    assert backtest._chart_indicators([
+        {"indicator": "CONSOLIDATION_HOTSPOT", "timeframe": "H1"},
+    ]) == [
+        {
+            "type": "CONSOLIDATION_HOTSPOT",
+            "columns": [
+                "consolidation_H1",
+                "consolidation_id_H1",
+                "consolidation_high_H1",
+                "consolidation_low_H1",
+            ],
+        },
+    ]

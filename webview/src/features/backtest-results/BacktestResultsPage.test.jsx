@@ -3,7 +3,7 @@ import { afterEach, test, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 
 vi.mock("../../shared/components/HighchartsChart.jsx", () => ({
-  HighchartsChart: ({ options, children, ...props }) => <div {...props} data-testid="highchart" data-title={options.title?.text}>{children}</div>,
+  HighchartsChart: ({ options, children, active: _active, ...props }) => <div {...props} data-testid="highchart" data-title={options.title?.text}>{children}</div>,
 }));
 
 import { BacktestResultsPage } from "./BacktestResultsPage.jsx";
@@ -21,12 +21,18 @@ const csv = "time,close_M15\n2026-08-01 00:00:00+00:00,1";
 
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
-test("renders only the workspace-selected symbol from a result-object payload", async () => {
+test("renders the selected result, a synchronized symbol selector, and compact side-by-side performance charts", async () => {
   vi.stubGlobal("requestAnimationFrame", (callback) => { callback(); return 1; });
   vi.stubGlobal("fetch", vi.fn(async (url) => ({ ok: true, status: 200, text: async () => String(url).startsWith("df") ? csv : JSON.stringify(payload) })));
-  render(<BacktestResultsPage active symbol="EURUSDm" resultPath="result.json" dfPath="df.csv" />);
-  assert.ok(await screen.findByText(/EURUSDm.*support_resistance/));
-  assert.equal(screen.queryByLabelText("Symbol"), null);
+  render(<BacktestResultsPage active symbol="EURUSDm" symbols={["EURUSDm", "GBPUSDm"]} onSymbolChange={() => {}} resultPath="result.json" dfPath="df.csv" />);
+  assert.ok((await screen.findAllByTestId("highchart")).length > 0);
+  assert.equal(screen.queryByText("Selected backtest"), null);
+  assert.equal(screen.queryByText(/support_resistance/), null);
+  assert.equal(screen.getAllByTestId("highchart").length, 4);
+  const performanceSection = screen.getByRole("region", { name: "Account performance and drawdown" });
+  assert.equal(performanceSection.querySelectorAll('[data-testid="highchart"]').length, 2);
+  assert.match(performanceSection.firstElementChild.querySelector('[data-testid="highchart"]').className, /h-\[15rem\]/);
+  assert.match(screen.getByRole("combobox", { name: "Backtest symbol" }).textContent, /EURUSDm/);
   assert.equal(screen.queryByLabelText("Strategy"), null);
 });
 

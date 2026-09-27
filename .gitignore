@@ -15,3 +15,6 @@ webview/strategies
 __pycache__
 
 agent/agent_tool_events.jsonl
+agent/temp
+live_bot/build/
+live_bot/dist/

@@ -7,7 +7,7 @@ from agent.paths import ENV_FILE
 
 load_dotenv(ENV_FILE)
 
-def get_openai_model(name: str = "gpt-5.6-luna"):
+def get_openai_model(name: str = "gpt-6-luna"):
     model = ChatOpenAI(
         model=name,
         reasoning_effort="none",

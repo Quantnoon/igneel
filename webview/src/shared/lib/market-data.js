@@ -2,6 +2,7 @@
 const CANDLE_FIELDS = ["open", "high", "low", "close", "volume"];
 
 const TIMEFRAME_ORDER = ["M1", "M5", "M15", "H1", "H4", "D1", "W1"];
+const TIMEFRAME_MINUTES = { M1: 1, M5: 5, M15: 15, H1: 60, H4: 240, D1: 1440 };
 
 const BACKTEST_TRADE_PREFIX = "backtest_";
 const BACKTEST_TRADE_ID_COLUMN = `${BACKTEST_TRADE_PREFIX}trade_id`;
@@ -140,6 +141,15 @@ export function parseCsv(text) {
   return rows;
 }
 
+export function availableMarketTimeframes(csvText) {
+  const rows = parseCsv(csvText);
+  if (rows.length === 0) return [];
+  const headers = rows[0].map((header, index) => index === 0 ? header.replace(/^\uFEFF/, "") : header);
+  return TIMEFRAME_ORDER.filter((timeframe) =>
+    ["open", "high", "low", "close"].every((field) => headers.includes(`${field}_${timeframe}`)),
+  );
+}
+
 export function toEpochMilliseconds(value, rowNumber) {
   const timestamp = value.trim();
   if (!timestamp) throw new Error(`Row ${rowNumber}: time is missing.`);
@@ -173,6 +183,64 @@ export function collapseEntryCandles(records, preserveTimes) {
     collapsed.push(record);
   }
   return collapsed;
+}
+
+/** Return the UTC start timestamp for a timeframe bucket. Weeks start Monday. */
+export function marketTimeframeBucket(time, timeframe) {
+  const timestamp = Number(time);
+  if (!Number.isFinite(timestamp)) return null;
+  if (timeframe === "W1") {
+    const date = new Date(timestamp);
+    const startOfDay = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+    const daysSinceMonday = (date.getUTCDay() + 6) % 7;
+    return startOfDay - daysSinceMonday * 86400000;
+  }
+  const minutes = TIMEFRAME_MINUTES[timeframe];
+  if (!minutes) return null;
+  const interval = minutes * 60000;
+  return Math.floor(timestamp / interval) * interval;
+}
+
+function groupMarketRecords(records, timeframe) {
+  const groups = new Map();
+  const bucketForTime = new Map();
+  for (const record of records) {
+    const bucket = marketTimeframeBucket(record.time, timeframe);
+    if (bucket === null) continue;
+    bucketForTime.set(record.time, bucket);
+    if (!groups.has(bucket)) groups.set(bucket, []);
+    groups.get(bucket).push(record);
+  }
+
+  const grouped = [];
+  for (const [bucket, rows] of groups) {
+    // Selected timeframe OHLCV values are repeated across lower timeframe rows.
+    // Keep the first valid candle; indicator state follows the latest populated row.
+    const candle = { ...rows[0], time: bucket };
+    for (const row of rows.slice(1)) {
+      for (const [key, value] of Object.entries(row)) {
+        if (["time", "open", "high", "low", "close", "volume", "backtestTrade", "backtestTrades"].includes(key)) continue;
+        if (value !== undefined) candle[key] = value;
+      }
+    }
+
+    const trades = rows.flatMap((row) => row.backtestTrades ?? (row.backtestTrade ? [row.backtestTrade] : []));
+    if (trades.length > 0) {
+      candle.backtestTrades = trades.map((trade) => {
+        const mapped = { ...trade };
+        for (const field of ["openTime", "closeTime"]) {
+          if (Number.isFinite(trade[field])) {
+            mapped[field] = bucketForTime.get(trade[field]) ?? marketTimeframeBucket(trade[field], timeframe);
+          }
+        }
+        return mapped;
+      });
+      candle.backtestTrade = candle.backtestTrades[0];
+      if (candle.backtestTrades.length === 1) delete candle.backtestTrades;
+    }
+    grouped.push(candle);
+  }
+  return grouped;
 }
 
 function parseBacktestTrade(row, fieldIndexes) {
@@ -222,21 +290,22 @@ export function backtestTradeSegments(records) {
   const indexByTime = new Map(records.map((record, index) => [record.time, index]));
   const segments = [];
   for (const record of records) {
-    const trade = record.backtestTrade;
-    if (!trade) continue;
-    if (!Number.isFinite(trade.entry) || !Number.isFinite(trade.exit)) continue;
-    const startIndex = indexByTime.get(trade.openTime);
-    const endIndex = indexByTime.get(trade.closeTime);
-    if (startIndex === undefined || endIndex === undefined) continue;
-    segments.push({
-      id: trade.id,
-      position: trade.position,
-      result: trade.result,
-      entryPrice: trade.entry,
-      exitPrice: trade.exit,
-      startIndex,
-      endIndex,
-    });
+    const trades = record.backtestTrades ?? (record.backtestTrade ? [record.backtestTrade] : []);
+    for (const trade of trades) {
+      if (!Number.isFinite(trade.entry) || !Number.isFinite(trade.exit)) continue;
+      const startIndex = indexByTime.get(trade.openTime);
+      const endIndex = indexByTime.get(trade.closeTime);
+      if (startIndex === undefined || endIndex === undefined) continue;
+      segments.push({
+        id: trade.id,
+        position: trade.position,
+        result: trade.result,
+        entryPrice: trade.entry,
+        exitPrice: trade.exit,
+        startIndex,
+        endIndex,
+      });
+    }
   }
   return segments;
 }
@@ -249,7 +318,7 @@ export function convertMarketData(csvText, entryTf, indicatorColumns = []) {
   const rows = parseCsv(csvText);
   if (rows.length === 0) throw new Error("CSV is empty.");
   const headers = rows[0].map((header, index) => index === 0 ? header.replace(/^\uFEFF/, "") : header);
-  const required = ["time", ...CANDLE_FIELDS.map((field) => `${field}_${entryTf}`)];
+  const required = ["time", ...CANDLE_FIELDS.filter((field) => field !== "volume").map((field) => `${field}_${entryTf}`)];
   const indexes = Object.fromEntries(required.map((column) => [column, headers.indexOf(column)]));
   const missing = required.filter((column) => indexes[column] < 0);
   if (missing.length > 0) {
@@ -266,11 +335,13 @@ export function convertMarketData(csvText, entryTf, indicatorColumns = []) {
   for (let rowIndex = 1; rowIndex < rows.length; rowIndex += 1) {
     const row = rows[rowIndex];
     if (row.length === 1 && row[0] === "") continue;
-    const values = CANDLE_FIELDS.map((field) => row[indexes[`${field}_${entryTf}`]] ?? "");
+    const values = CANDLE_FIELDS.filter((field) => field !== "volume")
+      .map((field) => row[indexes[`${field}_${entryTf}`]] ?? "");
     if (values.some((value) => value.trim() === "")) continue;
 
     const candle = { time: toEpochMilliseconds(row[indexes.time] ?? "", rowIndex + 1) };
-    CANDLE_FIELDS.forEach((field, fieldIndex) => {
+    const candleFields = CANDLE_FIELDS.filter((field) => field !== "volume");
+    candleFields.forEach((field, fieldIndex) => {
       const rawValue = values[fieldIndex];
       const number = Number(rawValue);
       if (!Number.isFinite(number)) {
@@ -278,9 +349,17 @@ export function convertMarketData(csvText, entryTf, indicatorColumns = []) {
       }
       candle[field] = number;
     });
+    const volumeIndex = headers.indexOf(`volume_${entryTf}`);
+    const rawVolume = volumeIndex >= 0 ? row[volumeIndex] ?? "" : "";
+    const volume = Number(rawVolume);
+    candle.volume = rawVolume.trim() !== "" && Number.isFinite(volume) ? volume : 0;
     for (const { column, index } of indicatorIndexes) {
       const rawValue = row[index] ?? "";
       if (rawValue.trim() === "") continue;
+      if (/^consolidation_[A-Za-z0-9]+$/i.test(column) && /^(true|false)$/i.test(rawValue.trim())) {
+        candle[column] = rawValue.trim().toLowerCase() === "true";
+        continue;
+      }
       const number = Number(rawValue);
       if (Number.isFinite(number)) candle[column] = number;
     }
@@ -295,13 +374,5 @@ export function convertMarketData(csvText, entryTf, indicatorColumns = []) {
     throw new Error(`No usable candle rows were found for ${entryTf}.`);
   }
 
-  const endpointTimes = new Set();
-  for (const record of records) {
-    const trade = record.backtestTrade;
-    if (!trade) continue;
-    endpointTimes.add(record.time);
-    if (Number.isFinite(trade.openTime)) endpointTimes.add(trade.openTime);
-    if (Number.isFinite(trade.closeTime)) endpointTimes.add(trade.closeTime);
-  }
-  return collapseEntryCandles(records, endpointTimes);
+  return groupMarketRecords(records, entryTf);
 }

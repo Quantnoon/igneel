@@ -27,7 +27,7 @@ def main():
 
     goal = questionary.text(
         "Enter the trading goal/task:",
-        default="scalp the market. grow the account in show period",
+        default="scalp the market. grow the account in short period of time",
         validate=lambda value: (
             True if is_valid_goal(value) else "Enter a non-empty trading goal"
         ),

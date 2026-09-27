@@ -329,6 +329,21 @@ def validate_lot_size(value: object) -> float:
     return lot_size
 
 
+class RecoverableEntryPriceError(RuntimeError):
+    """A directional Acnologia response omitted or invalidated ENTRY PRICE."""
+
+
+class RecoverableDirectionalDecisionError(RuntimeError):
+    """A qualifying Atlas direction was not honored by Acnologia."""
+
+
+EMERGENCY_NO_TRADE_REASON_CODES = {
+    "MARKET_DATA_UNAVAILABLE",
+    "BROKER_SPECIFICATION_UNAVAILABLE",
+    "EXECUTION_LEVELS_INVALID",
+}
+
+
 def parse_acnologia_decision(
     text: str,
     expected_lot_size: float,
@@ -389,6 +404,26 @@ def parse_acnologia_decision(
 
     decision = decision_match.group(1).upper()
 
+    # A directional response without a usable entry reference can be retried
+    # once. Validate it before other required fields so the caller can
+    # distinguish this recoverable contract error from malformed responses.
+    if decision in {"LONG", "SHORT"}:
+        entry_match = re.search(
+            r"\bENTRY\s+PRICE\s*:\s*([^\r\n]*)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        entry_value = entry_match.group(1).strip() if entry_match else ""
+        if (
+            not entry_value
+            or entry_value.upper() == "NONE"
+            or not re.fullmatch(r"-?\d+(?:\.\d+)?", entry_value)
+        ):
+            raise RecoverableEntryPriceError(
+                f"{decision} requires a numeric ENTRY PRICE from the latest "
+                "completed entry-timeframe close."
+            )
+
     # -----------------------------
     # Confidence
     # -----------------------------
@@ -440,6 +475,17 @@ def parse_acnologia_decision(
     risk_distance = parse_number("RISK DISTANCE")
     risk_reward_ratio = parse_number("RISK REWARD RATIO")
     reported_lot_size = parse_number("LOT SIZE")
+
+    no_trade_reason_match = re.search(
+        r"\bNO_TRADE\s+REASON\s+CODE\s*:\s*([^\r\n]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    no_trade_reason_code = (
+        no_trade_reason_match.group(1).strip().upper()
+        if no_trade_reason_match
+        else None
+    )
 
     stop_method_match = re.search(
         r"\bSTOP\s+METHOD\s*:\s*(ATR|SWING|FIXED_POINTS|NONE)\b",
@@ -558,10 +604,32 @@ def parse_acnologia_decision(
         "risk_distance": risk_distance,
         "risk_reward_ratio": risk_reward_ratio,
         "wait_timeframe": wait_timeframe,
+        "no_trade_reason_code": no_trade_reason_code,
     }
 
 
-def validate_decision_matches_atlas(analysis: str, decision: str) -> None:
+def get_qualifying_direction(analysis: str) -> str | None:
+    """Return the required direction when Atlas provides a qualifying signal."""
+
+    bias_match = re.search(r"\bDIRECTIONAL\s+BIAS\s*:\s*(BULLISH|BEARISH|NEUTRAL|MIXED)\b", analysis, flags=re.IGNORECASE)
+    confidence_match = re.search(r"\bCONFIDENCE\s*:\s*(HIGH|MODERATE|LOW)\b", analysis, flags=re.IGNORECASE)
+    if not bias_match or not confidence_match:
+        return None
+
+    bias = bias_match.group(1).upper()
+    confidence = confidence_match.group(1).upper()
+    if bias == "BULLISH" and confidence in {"MODERATE", "HIGH"}:
+        return "LONG"
+    if bias == "BEARISH" and confidence in {"MODERATE", "HIGH"}:
+        return "SHORT"
+    return None
+
+
+def validate_decision_matches_atlas(
+    analysis: str,
+    decision: str,
+    no_trade_reason_code: str | None = None,
+) -> None:
     """Reject WAIT or an opposite side when Atlas supplied a qualifying bias."""
     bias_match = re.search(r"\bDIRECTIONAL\s+BIAS\s*:\s*(BULLISH|BEARISH|NEUTRAL|MIXED)\b", analysis, flags=re.IGNORECASE)
     confidence_match = re.search(r"\bCONFIDENCE\s*:\s*(HIGH|MODERATE|LOW)\b", analysis, flags=re.IGNORECASE)
@@ -570,13 +638,18 @@ def validate_decision_matches_atlas(analysis: str, decision: str) -> None:
 
     bias = bias_match.group(1).upper()
     confidence = confidence_match.group(1).upper()
-    qualifying_direction = (
-        "LONG" if bias == "BULLISH" and confidence in {"MODERATE", "HIGH"}
-        else "SHORT" if bias == "BEARISH" and confidence in {"MODERATE", "HIGH"}
-        else None
-    )
-    if qualifying_direction and decision not in {qualifying_direction, "NO_TRADE"}:
-        raise RuntimeError(f"Qualifying Atlas {bias}/{confidence} analysis requires {qualifying_direction} or NO_TRADE, not {decision}.")
+    qualifying_direction = get_qualifying_direction(analysis)
+    if qualifying_direction and decision == qualifying_direction:
+        return
+    if qualifying_direction and decision == "NO_TRADE" and no_trade_reason_code in EMERGENCY_NO_TRADE_REASON_CODES:
+        return
+    if qualifying_direction:
+        raise RecoverableDirectionalDecisionError(
+            f"Qualifying Atlas {bias}/{confidence} analysis requires "
+            f"{qualifying_direction} with valid levels, or NO_TRADE with one "
+            f"of {sorted(EMERGENCY_NO_TRADE_REASON_CODES)}, not {decision} "
+            f"with {no_trade_reason_code or 'no'} reason code."
+        )
     if qualifying_direction is None and decision != "WAIT":
         raise RuntimeError(f"Atlas {bias}/{confidence} analysis requires WAIT, not {decision}.")
 
@@ -600,12 +673,7 @@ async def trade_decision_node(state: TradingState):
 
     print("\n\n[GRAPH] ACNOLOGIA")
 
-    result = await acnologia_agent.ainvoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"""
+    decision_request = f"""
 Evaluate the following market analysis and make the final trade decision.
 
 Goal:
@@ -623,16 +691,48 @@ Do not calculate or modify it.
 Market analysis:
 
 {analysis}
-""",
-                }
-            ]
-        }
+"""
+    result = await acnologia_agent.ainvoke(
+        {"messages": [{"role": "user", "content": decision_request}]}
     )
 
     output = get_last_message_content(result)
+    try:
+        trade = parse_acnologia_decision(output, lot_size)
+        validate_decision_matches_atlas(
+            analysis,
+            trade["decision"],
+            trade["no_trade_reason_code"],
+        )
+    except (RecoverableEntryPriceError, RecoverableDirectionalDecisionError) as first_error:
+        required_direction = get_qualifying_direction(analysis)
+        correction_request = f"""{decision_request}
 
-    trade = parse_acnologia_decision(output, lot_size)
-    validate_decision_matches_atlas(analysis, trade["decision"])
+CORRECTION REQUIRED:
+{first_error}
+Return the complete required decision format again. The required Atlas direction
+is {required_direction or 'not available'}. For LONG or SHORT, ENTRY PRICE must
+be the latest finite close of the most recently completed candle on the active
+TIMEFRAME PLAN's entry timeframe. A qualifying signal may return NO_TRADE only
+with NO_TRADE REASON CODE: MARKET_DATA_UNAVAILABLE,
+BROKER_SPECIFICATION_UNAVAILABLE, or EXECUTION_LEVELS_INVALID.
+"""
+        retry_result = await acnologia_agent.ainvoke(
+            {"messages": [{"role": "user", "content": correction_request}]}
+        )
+        output = get_last_message_content(retry_result)
+        try:
+            trade = parse_acnologia_decision(output, lot_size)
+            validate_decision_matches_atlas(
+                analysis,
+                trade["decision"],
+                trade["no_trade_reason_code"],
+            )
+        except (RecoverableEntryPriceError, RecoverableDirectionalDecisionError) as retry_error:
+            raise RuntimeError(
+                "Acnologia failed to honor the qualifying Atlas direction after "
+                f"one correction: {retry_error}"
+            ) from retry_error
 
     print(f"\n[ACNOLOGIA DECISION: {trade['decision']}]")
     print(f"[CONFIDENCE: {trade['confidence']}]")

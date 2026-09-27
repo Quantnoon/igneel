@@ -34,7 +34,6 @@ def test_every_market_data_file_caller_documents_the_request_limits():
     for prompt in (
         ATLAS_SYSTEM_PROMPT,
         ACNOLOGIA_SYSTEM_PROMPT,
-        GRANDINE_SYSTEM_PROMPT,
     ):
         assert "get_price_data_file" in prompt
         assert MARKET_DATA_FILE_CONTRACT in prompt
@@ -59,9 +58,11 @@ def test_market_data_file_callers_follow_and_persist_the_timeframe_plan():
     assert "TIMEFRAME PLAN:" in ATLAS_SYSTEM_PROMPT
     assert "persisted in Atlas's RESEARCH CONTEXT exactly" in MARKET_DATA_FILE_CONTRACT
     assert "Use the exact TIMEFRAME PLAN from Atlas's active research context" in ACNOLOGIA_SYSTEM_PROMPT
-    assert "Use the exact TIMEFRAME PLAN from the active research context" in GRANDINE_SYSTEM_PROMPT
     assert "return NO_TRADE with unavailable market evidence" in ACNOLOGIA_SYSTEM_PROMPT
-    assert "recommend HOLD" in GRANDINE_SYSTEM_PROMPT
+    assert "does not choose this review's market-data request" in GRANDINE_SYSTEM_PROMPT
+    assert 'get_price_data_file(symbol=<position symbol>, timeframes=["M15"], date_range="1W")' in GRANDINE_SYSTEM_PROMPT
+    assert "before this tool succeeds" in GRANDINE_SYSTEM_PROMPT
+    assert MARKET_DATA_FILE_CONTRACT not in GRANDINE_SYSTEM_PROMPT
 
 
 def test_atlas_reviews_each_search_url_before_using_web_evidence():
@@ -75,7 +76,7 @@ def test_atlas_reviews_each_search_url_before_using_web_evidence():
 
 
 def test_acnologia_prompt_requires_stop_method_and_risk_reward_calculation():
-    assert "must be LONG or NO_TRADE" in ACNOLOGIA_SYSTEM_PROMPT
+    assert "must be LONG when valid execution" in ACNOLOGIA_SYSTEM_PROMPT
     assert "Never return WAIT for\na qualifying direction" in ACNOLOGIA_SYSTEM_PROMPT
     assert "## STOP LOSS AND TAKE PROFIT" in ACNOLOGIA_SYSTEM_PROMPT
     assert "`ATR`" in ACNOLOGIA_SYSTEM_PROMPT
@@ -113,6 +114,32 @@ def test_sandbox_analysis_prompts_use_python3_and_multiline_heredocs():
     assert "closing delimiter each occupy separate lines" in GRANDINE_SYSTEM_PROMPT
 
 
+def test_grandine_is_offline_and_defines_its_atr_risk_contract():
+    assert "You are offline" in GRANDINE_SYSTEM_PROMPT
+    assert "Python networking libraries" in GRANDINE_SYSTEM_PROMPT
+    assert "web_search" not in GRANDINE_SYSTEM_PROMPT
+    assert "fetch_url" not in GRANDINE_SYSTEM_PROMPT
+    assert "Wilder ATR(14)" in GRANDINE_SYSTEM_PROMPT
+    assert "preceding 50 valid" in GRANDINE_SYSTEM_PROMPT
+    assert "P/L <= -2%" in GRANDINE_SYSTEM_PROMPT
+    assert "P/L >= +1%" in GRANDINE_SYSTEM_PROMPT
+    assert "Python/pandas/numpy script" in GRANDINE_SYSTEM_PROMPT
+    assert "candidate stop calculation" in GRANDINE_SYSTEM_PROMPT
+    assert "<returned-path>" in GRANDINE_SYSTEM_PROMPT
+    assert "sandbox_script" in GRANDINE_SYSTEM_PROMPT
+    assert "timeframe plan omitted M15" in GRANDINE_SYSTEM_PROMPT
+    assert "Never\nrun `ls /workspace`, `ls /workspace/market`" in GRANDINE_SYSTEM_PROMPT
+    assert "evaluate_grandine_position" not in GRANDINE_SYSTEM_PROMPT
+
+
+def test_grandine_is_registered_with_the_generic_market_data_tool():
+    source = (PROJECT_ROOT / "agent" / "deep_agents.py").read_text(encoding="utf-8")
+    grandine_section = source.split("grandine_subagent =", 1)[1].split("ignia_agent =", 1)[0]
+
+    assert "get_price_data_file" in grandine_section
+    assert "get_position_management_data_file" not in source
+
+
 def load_tools(monkeypatch):
     """Load the file tool with local-only fakes for its external dependencies."""
     monkeypatch.setenv("DERIV_LOGIN", "1")
@@ -139,11 +166,24 @@ def load_tools(monkeypatch):
     mt5.TIMEFRAME_M5 = 5
     mt5.TIMEFRAME_M1 = 6
 
+    class Tool:
+        def __init__(self, function):
+            self.function = function
+
+        async def ainvoke(self, arguments):
+            return await self.function(**arguments)
+
+    langchain_core = ModuleType("langchain_core")
+    langchain_tools = ModuleType("langchain_core.tools")
+    langchain_tools.tool = Tool
+
     monkeypatch.setitem(sys.modules, "agent.agent_backend", backend)
     monkeypatch.setitem(sys.modules, "collection", collection)
     monkeypatch.setitem(sys.modules, "connection", connection)
     monkeypatch.setitem(sys.modules, "order", order)
     monkeypatch.setitem(sys.modules, "MetaTrader5", mt5)
+    monkeypatch.setitem(sys.modules, "langchain_core", langchain_core)
+    monkeypatch.setitem(sys.modules, "langchain_core.tools", langchain_tools)
 
     spec = importlib.util.spec_from_file_location(
         "agent.test_sandbox_market_data_module",
