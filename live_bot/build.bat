@@ -12,13 +12,11 @@ pushd "%PROJECT_ROOT%" || goto :failed
 rem The config module reads credentials for all deployments at import time.
 rem Build-only values let this script obtain the selected config name without
 rem requiring or packaging a developer's real credentials.
-set "DERIV_LOGIN=0"
-set "DERIV_PASSWORD=build-only"
-set "DERIV_SERVER=build-only"
-set "EXNESS_LOGIN=0"
-set "EXNESS_PASSWORD=build-only"
-set "EXNESS_SERVER=build-only"
-
+set "LOGIN=0"
+set "PASSWORD=build-only"
+set "SERVER=build-only"
+set "SERVER=build-only"
+set "TERMINAL_PATH=build-only"
 "%PYTHON_EXE%" -c "from live_bot.live_config import active_config; name = active_config.get('name'); invalid = set('<>:/\\|?*') | {chr(34)}; reserved = {'CON', 'PRN', 'AUX', 'NUL'} | {'COM' + str(i) for i in range(1, 10)} | {'LPT' + str(i) for i in range(1, 10)}; valid = isinstance(name, str) and bool(name) and name == name.strip() and not name.endswith(('.', ' ')) and not any(ch in invalid or ord(ch) < 32 for ch in name) and name.split('.')[0].upper() not in reserved; print(name) if valid else exit(2)" > "%NAME_FILE%"
 if errorlevel 1 goto :invalid_name
 

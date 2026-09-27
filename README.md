@@ -20,6 +20,14 @@ Igneel is an algorithmic trading engine for market analysis, order execution, tr
 - `python -m backtest.backtest` (preferred) or `python backtest/backtest.py` - strategy backtesting system configured through `backtest/backtest_config.py`.
 - `webview/` - web interface for viewing market charts, strategies, and backtest results.
 
+## Telegram notifications
+
+The live bot can send daily trade summaries and operational alerts through a Telegram bot. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the local `.env` file beside the executable, or at the project root when running from this checkout. Keep the token private; Telegram notifications are disabled with a local warning when either value is missing.
+
+The daily report is sent after midnight in `Africa/Lagos` and covers the previous calendar day. Telegram delivery failures are logged locally and do not stop the trading loop.
+
+To test delivery when the bot starts, temporarily set `TELEGRAM_REPORT_ON_START=true` in the same local `.env` file. This sends a separate report for the current Lagos calendar day from midnight through startup time and does not change the scheduled report's saved date. Remove the setting or set it to `false` to return to the normal daily report behavior. The setting is off by default.
+
 The DeepAgents filesystem backend is rooted at `agent/`. Agent prompts therefore
 use virtual paths such as `/skills/...` and `/large_tool_results/...`; these map
 to `agent/skills/...` and `agent/large_tool_results/...` at runtime.

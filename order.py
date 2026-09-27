@@ -335,32 +335,99 @@ def open_orders(symbol=None, ticket=None, group=None):
             entries.append(entry)
     return _ok(entries)
 
-def order_history(date_range, symbol=None, ticket=None, group=None):
-    if not isinstance(date_range, str):
-        return _fail("date_range must be a string, e.g. 5D, 1W, 3M, 1Y.")
+def order_history(
+    date_range=None,
+    date_to=None,
+    symbol=None,
+    ticket=None,
+    group=None,
+    magic=None,
+    position=None,
+    *,
+    date_from=None,
+):
+    """Return deals in a rolling range or an explicit timezone-aware interval.
 
-    match = re.fullmatch(r"(\d+)([DWMY])", date_range.upper())
+    ``date_from`` and ``date_to`` may be supplied together to query an exact
+    interval. For compatibility, two positional datetime arguments are also
+    accepted as the interval bounds. ``position`` requests the complete deal
+    history associated with one position ticket.
+    """
+    if position is not None:
+        if any(
+            value is not None
+            for value in (date_range, date_to, symbol, ticket, group, date_from)
+        ):
+            return _fail("position cannot be combined with date or other filters.")
+        error = _number(position, "position", positive=True, integer=True)
+        if error:
+            return error
+        if magic is not None:
+            error = _number(magic, "magic", integer=True)
+            if error:
+                return error
+        try:
+            result = mt5.history_deals_get(position=position)
+        except Exception:
+            return _fail("MetaTrader 5 operation failed unexpectedly.")
+        if result is None:
+            diagnostic = _last_error("Unable to retrieve position history.")
+            return _fail(diagnostic["message"], diagnostic["code"])
+        values = [_plain(x) for x in result]
+        if magic is not None:
+            values = [x for x in values if x.get("magic") == magic]
+        return _ok(values)
 
-    if not match:
-        return _fail(
-            "Invalid date_range. Use a format such as 5D, 2W, 3M, or 1Y."
-        )
+    if isinstance(date_range, datetime):
+        if date_from is not None or date_to is None:
+            return _fail("Provide both date_from and date_to for an explicit interval.")
+        date_from = date_range
+    elif date_from is not None or date_to is not None:
+        if date_from is None or date_to is None:
+            return _fail("Provide both date_from and date_to for an explicit interval.")
+    else:
+        if not isinstance(date_range, str):
+            return _fail("date_range must be a string, e.g. 5D, 1W, 3M, 1Y.")
 
-    value, unit = int(match.group(1)), match.group(2)
+        match = re.fullmatch(r"(\d+)([DWMY])", date_range.upper())
 
-    if value <= 0:
-        return _fail("date_range value must be greater than 0.")
+        if not match:
+            return _fail(
+                "Invalid date_range. Use a format such as 5D, 2W, 3M, or 1Y."
+            )
 
-    date_to = datetime.now(timezone.utc)
+        value, unit = int(match.group(1)), match.group(2)
 
-    if unit == "D":
-        date_from = date_to - timedelta(days=value)
-    elif unit == "W":
-        date_from = date_to - timedelta(weeks=value)
-    elif unit == "M":
-        date_from = date_to - timedelta(days=value * 30)
-    elif unit == "Y":
-        date_from = date_to - timedelta(days=value * 365)
+        if value <= 0:
+            return _fail("date_range value must be greater than 0.")
+
+        date_to = datetime.now(timezone.utc)
+
+        if unit == "D":
+            date_from = date_to - timedelta(days=value)
+        elif unit == "W":
+            date_from = date_to - timedelta(weeks=value)
+        elif unit == "M":
+            date_from = date_to - timedelta(days=value * 30)
+        elif unit == "Y":
+            date_from = date_to - timedelta(days=value * 365)
+
+    if not isinstance(date_from, datetime) or not isinstance(date_to, datetime):
+        return _fail("date_from and date_to must be datetimes.")
+    if date_from.tzinfo is None or date_from.utcoffset() is None:
+        return _fail("date_from must be timezone-aware.")
+    if date_to.tzinfo is None or date_to.utcoffset() is None:
+        return _fail("date_to must be timezone-aware.")
+    if date_from > date_to:
+        return _fail("date_from must be earlier than or equal to date_to.")
+
+    date_from = date_from.astimezone(timezone.utc)
+    date_to = date_to.astimezone(timezone.utc)
+
+    if magic is not None:
+        error = _number(magic, "magic", integer=True)
+        if error:
+            return error
 
     if symbol is not None and group is not None:
         return _fail("symbol and group are mutually exclusive.")
@@ -391,6 +458,8 @@ def order_history(date_range, symbol=None, ticket=None, group=None):
 
     if ticket is not None:
         values = [x for x in values if x.get("order") == ticket]
+    if magic is not None:
+        values = [x for x in values if x.get("magic") == magic]
 
     return _ok(values)
 

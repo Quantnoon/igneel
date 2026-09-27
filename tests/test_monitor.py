@@ -247,3 +247,104 @@ def test_multiple_blockers_are_combined_in_deterministic_order(monkeypatch):
             "An order or position already exists for EURUSD."
         ),
     }
+
+
+def test_quantnoon_new_signal_can_be_suppressed_and_later_reenabled(monkeypatch):
+    monkeypatch.setenv("QUANTNOON_SIGNAL", "true")
+    sent = []
+    stored = []
+
+    class FakeSender:
+        def send_signal_webhook(self, **kwargs):
+            sent.append(kwargs)
+
+    class FakeSignalDatabase:
+        def get_row(self, *args):
+            return {"success": False, "data": None, "error": None}
+
+        def create_table(self, *args):
+            stored.append(("create", args))
+
+        def add_to_table(self, *args):
+            stored.append(("add", args))
+
+    monkeypatch.setattr(monitor, "SignalSender", FakeSender)
+    monkeypatch.setattr(monitor, "_db", FakeSignalDatabase())
+    frame = monitor.pd.DataFrame(
+        {"time": [datetime(2026, 9, 1)], "low_M15": [1.0], "high_M15": [1.1]}
+    )
+    provider_args = {
+        "signal": {"pos": "buy", "sl": 0.9, "tp": 1.2, "open_price": 1.05},
+        "symbol": "EURUSD",
+        "identifier": "test_signal",
+        "signal_name": "Test",
+        "trade_date": datetime(2026, 9, 1),
+        "df": frame,
+        "entry_tf": "M15",
+        "exit_signal": None,
+    }
+
+    monitor.quantnoon_signal_provider(**provider_args, allow_new_signal=False)
+    assert sent == []
+    assert stored == []
+
+    # The optional argument defaults to enabled, preserving existing callers.
+    monitor.quantnoon_signal_provider(**provider_args)
+    assert len(sent) == 1
+    assert len(stored) == 2
+
+
+def test_quantnoon_existing_exit_record_is_sent_during_drawdown(monkeypatch):
+    monkeypatch.setenv("QUANTNOON_SIGNAL", "true")
+    records = []
+    deleted = []
+    existing = {
+        "id": "test_signal_EURUSD",
+        "algo_name": "test_signal",
+        "trade_date": "01/09/2026, 00:00:00",
+        "sl": 0.9,
+        "op": 1.0,
+        "tp": 1.2,
+        "position": "buy",
+        "exit_date": None,
+        "gain": 0,
+        "symbol": "EURUSD",
+    }
+
+    class FakeRecorder:
+        def send_record_webhook(self, **kwargs):
+            records.append(kwargs)
+
+    class FakeSignalDatabase:
+        def get_row(self, *args):
+            return {"success": True, "data": existing, "error": None}
+
+        def delete_row(self, *args):
+            deleted.append(args)
+
+    monkeypatch.setattr(monitor, "SignalRecorder", FakeRecorder)
+    monkeypatch.setattr(monitor, "_db", FakeSignalDatabase())
+    frame = monitor.pd.DataFrame(
+        {
+            "time": [monitor.pd.Timestamp("2026-09-01 00:00:00", tz="UTC")],
+            "low_M15": [1.0],
+            "high_M15": [1.3],
+            "close_M15": [1.25],
+        }
+    )
+
+    monitor.quantnoon_signal_provider(
+        signal={"pos": "buy", "sl": 0.9, "tp": None, "open_price": 1.0},
+        symbol="EURUSD",
+        identifier="test_signal",
+        signal_name="Test",
+        trade_date=monitor.pd.Timestamp("2026-09-01 00:00:00", tz="UTC"),
+        df=frame,
+        entry_tf="M15",
+        exit_signal=None,
+        allow_new_signal=False,
+    )
+
+    assert len(records) == 1
+    assert records[0]["gain"] == pytest.approx(0.2)
+    assert deleted == [("test_signal", "id", "test_signal_EURUSD")]

@@ -98,6 +98,7 @@ Result = namedtuple("Result", "retcode comment request")
 Position = namedtuple("Position", "ticket symbol type volume price_open sl tp magic")
 Pending = namedtuple("Pending", "ticket symbol price_open sl tp type_time time_expiration magic")
 Deal = namedtuple("Deal", "ticket order symbol request")
+HistoryDeal = namedtuple("HistoryDeal", "ticket magic order position_id")
 
 
 @pytest.mark.parametrize("kind,expected_type,expected_price", [("buy", 10, 1.2), ("sell", 11, 1.1)])
@@ -319,6 +320,61 @@ def test_history_validation_empty_and_failures(order):
     assert module.order_history(aware, aware)["data"] == []
     fake.deals = None
     assert module.order_history(aware, aware)["success"] is False
+
+
+def test_history_accepts_explicit_bounds_and_magic_filter(order):
+    module, fake = order
+    local = timezone(timedelta(hours=1))
+    start = datetime(2025, 1, 1, 0, 0, tzinfo=local)
+    end = datetime(2025, 1, 2, 0, 0, tzinfo=local)
+
+    result = module.order_history(
+        date_from=start,
+        date_to=end,
+        magic=123,
+    )
+
+    assert result["success"] is True
+    args, kwargs = fake.history_calls[0]
+    assert args == (start.astimezone(timezone.utc), end.astimezone(timezone.utc))
+    assert kwargs == {}
+
+    assert module.order_history(date_from=start, magic=123)["success"] is False
+    assert module.order_history(date_from=start.replace(tzinfo=None), date_to=end)["success"] is False
+
+
+def test_history_applies_magic_filter_locally(order):
+    module, fake = order
+    fake.deals = (
+        HistoryDeal(1, 77, 500, 700),
+        HistoryDeal(2, 0, 501, 701),
+        HistoryDeal(3, 88, 502, 702),
+    )
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = datetime(2025, 1, 2, tzinfo=timezone.utc)
+
+    result = module.order_history(date_from=start, date_to=end, magic=77)
+
+    assert [deal["ticket"] for deal in result["data"]] == [1]
+    assert fake.history_calls[0] == ((start, end), {})
+
+
+def test_history_queries_position_without_date_or_magic_filters(order):
+    module, fake = order
+    fake.deals = (
+        HistoryDeal(1, 77, 500, 700),
+        HistoryDeal(2, 0, 501, 700),
+        HistoryDeal(3, 88, 502, 702),
+    )
+
+    result = module.order_history(position=700)
+
+    assert [deal["ticket"] for deal in result["data"]] == [1, 2, 3]
+    assert fake.history_calls == [((), {"position": 700})]
+    assert module.order_history(position=700, magic=77)["data"] == [
+        {"ticket": 1, "magic": 77, "order": 500, "position_id": 700}
+    ]
+    assert module.order_history(position=700, date_range="1D")["success"] is False
 
 
 def test_failures_have_serializable_stable_shape_and_do_not_echo_values(order):
