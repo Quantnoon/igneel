@@ -24,7 +24,7 @@ set /p "EXE_NAME="<"%NAME_FILE%"
 del /q "%NAME_FILE%" >nul 2>&1
 if not defined EXE_NAME goto :invalid_name
 
-"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --onefile --name "%EXE_NAME%" --hidden-import=talib.stream --paths "%PROJECT_ROOT%" --distpath "%LIVE_BOT_DIR%dist" --workpath "%LIVE_BOT_DIR%build\pyinstaller" --specpath "%LIVE_BOT_DIR%build" "%LIVE_BOT_DIR%live_bot.py"
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --onefile --name "%EXE_NAME%" --icon "%LIVE_BOT_DIR%igneel.ico" --hidden-import=talib.stream --paths "%PROJECT_ROOT%" --distpath "%LIVE_BOT_DIR%dist" --workpath "%LIVE_BOT_DIR%build\pyinstaller" --specpath "%LIVE_BOT_DIR%build" "%LIVE_BOT_DIR%live_bot.py"
 if errorlevel 1 goto :build_failed
 
 echo.
