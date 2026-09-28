@@ -328,22 +328,38 @@ def _process_signal_symbol(
                     )
 
 
-def run_bot():
+def _wait_for_stop(stop_event, seconds):
+    """Wait for the next bot pass, returning early when shutdown is requested."""
+    if stop_event is None:
+        time.sleep(seconds)
+        return False
+    return stop_event.wait(seconds)
+
+
+def run_bot(stop_event=None):
+    """Run the live bot until stopped, finishing the current signal pass first."""
     initialize_telegram()
     connection = connect(active_config["auth"])
-    if (
-        not connection.get("success")
-        or connection.get("error") is not None
-        or connection.get("account_info") is None
-        or connection.get("terminal_info") is None
-    ):
-        log_error(
-            "MetaTrader 5 connection failed: %s" % connection.get("error"),
-            event_key="mt5_connection",
-        )
-        raise SystemExit(1)
-    clear_alert("mt5_connection")
+    try:
+        if (
+            not connection.get("success")
+            or connection.get("error") is not None
+            or connection.get("account_info") is None
+            or connection.get("terminal_info") is None
+        ):
+            log_error(
+                "MetaTrader 5 connection failed: %s" % connection.get("error"),
+                event_key="mt5_connection",
+            )
+            raise SystemExit(1)
+        clear_alert("mt5_connection")
+        _run_connected_bot(stop_event)
+    finally:
+        if connection.get("success"):
+            mt5.shutdown()
 
+
+def _run_connected_bot(stop_event):
     account = Account()
     db = Database(active_config["name"])
     symbols = active_config["symbols"]
@@ -367,7 +383,7 @@ def run_bot():
                 event_key="telegram_startup_report_runtime",
             )
 
-    while True:
+    while stop_event is None or not stop_event.is_set():
         try:
             daily_log(signals, db)
         except Exception as exc:
@@ -389,7 +405,8 @@ def run_bot():
                 "Price data initialization failed: %s" % exc,
                 event_key="price_data_collection",
             )
-            time.sleep(active_config["sleep_time"])
+            if _wait_for_stop(stop_event, active_config["sleep_time"]):
+                break
             continue
 
         account_info = account.get_account_info()
@@ -405,8 +422,8 @@ def run_bot():
                     max_dd,
                     entry_tf,
                 )
-        time.sleep(active_config["sleep_time"])
-
+        if _wait_for_stop(stop_event, active_config["sleep_time"]):
+            break
 
 if __name__ == "__main__":
     run_bot()

@@ -101,7 +101,8 @@ _deployments = {
                 "trading_sessions": [],
                 "allow_many_trades": False,
                 "use_trailing_sl": True,
-                "is_weekend_trading": False
+                "entry_tf": "M15",
+                "is_weekend_trading": False,
             }
         ],
         "entry_tf": "M15",
