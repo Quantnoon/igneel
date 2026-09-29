@@ -60,6 +60,7 @@ def exit_test_signal(df, i, pos):
     return False
 
 def sr_entry(df, i):
+    i = i - 1
     support_high = df["support_high_H4"].values
     support_low = df["support_low_H4"].values
     resistance_high = df["resistance_high_H4"].values
@@ -93,6 +94,7 @@ def sr_entry(df, i):
     return None, None
 
 def sr_exit(df, i, pos):
+    i = i - 1
     support_high = df["support_high_H4"].values
     resistance_low = df["resistance_low_H4"].values
     close = df["close_M15"].values

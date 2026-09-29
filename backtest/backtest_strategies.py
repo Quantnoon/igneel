@@ -47,7 +47,36 @@ def sr_exit(df, i, pos):
     return False
 
 def consolidation_entry(df, i):
+    consolidation = df["consolidation_H1"].values
+    consolidation_high = df["consolidation_high_H1"].values
+    consolidation_low = df["consolidation_low_H1"].values
+    high = df["high_H1"].values
+    low = df["low_H1"].values
+    trend = df["ema_trend_H1"].values
+
+    if consolidation[i] == False:
+        lookback = 5
+        new_lookback = i - lookback
+        lookback_count = 0
+        if new_lookback > lookback + 1:
+            for j in range(i, new_lookback, -1):
+                lookback_count += 1
+                if consolidation[j]:
+                    if trend[i] == "down" and lookback_count == lookback:
+                        lookback_count = 0
+                        return "sell", consolidation_high[j], None
+                    elif trend[i] == "up" and lookback_count == lookback:
+                        lookback_count = 0
+                        return "buy", consolidation_high[j], None
+                    else:
+                        lookback_count = 0
+                        continue
+
     return None, None, None
 
 def consolidation_exit(df, i, pos):
+    consolidation = df["consolidation_H1"].values
+    close = df["close_H1"].values
+    if consolidation[i]:
+        return True
     return False

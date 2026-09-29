@@ -71,24 +71,28 @@ strategies = [
             {
                 "indicator": "CONSOLIDATION_HOTSPOT",
                 "timeframe": "H1"
+            },
+            {
+                "indicator": "COMBINED_TREND",
+                "timeframe": "H1"
             }
         ],
         "timeframes": ["H1"],
-        "date_range": "1M",
+        "date_range": "8M",
         "strategy": ("consolidation", consolidation_entry, consolidation_exit),
         "config": {
             "default_config": {
-                "sl_type": "custom",
+                "sl_type": "atr",
                 "atr_multiplier": 2.5,
-                "rrr": 2,
+                "rrr": 3,
                 "entry_tf": "H1",
                 "slippage": 2.5
             },
             "risk_config": {
-                "starting_balance":      30,
+                "starting_balance":      100,
                 "currency":              "USD",   # or "NGN"
                 "ngn_conversion_rate":   1450,
-                "lot_size":              0.01,
+                "lot_size":              0.02,
                 "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
                 "daily_dd": 0.05, # in percentage
                 "maximum_dd": 0.7, # in percentage
