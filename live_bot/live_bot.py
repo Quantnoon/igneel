@@ -412,7 +412,7 @@ def _run_connected_bot(stop_event):
         account_info = account.get_account_info()
         for signal in signals:
             print("------ Passing through %s signal --------" % signal["name"])
-            for symbol in signal["allowed_symbols"]:
+            for symbol in price_data.get_symbols((signal["allowed_symbols"])):
                 process_signal_symbol(
                     price_data,
                     signal,

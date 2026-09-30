@@ -106,3 +106,28 @@ def sr_exit(df, i, pos):
         if close[i] < support_high[i] and support_high[i] < resistance_low[i]:
             return True
     return False
+
+def consolidation_entry(df, i):
+    consolidation = df["consolidation_H1"].values
+    consolidation_high = df["consolidation_high_H1"].values
+    trend = df["ema_trend_H1"].values
+
+    if consolidation[i] == False:
+        lookback = 5
+        new_lookback = i - lookback
+        lookback_count = 0
+        if new_lookback > lookback + 1:
+            for j in range(i, new_lookback, -1):
+                lookback_count += 1
+                if consolidation[j]:
+                    if trend[i] == "down" and lookback_count == lookback:
+                        lookback_count = 0
+                        return "sell", consolidation_high[j]
+                    elif trend[i] == "up" and lookback_count == lookback:
+                        lookback_count = 0
+                        return "buy", consolidation_high[j]
+                    else:
+                        lookback_count = 0
+                        continue
+
+    return None, None

@@ -28,6 +28,8 @@ if __name__ == "__main__":
             indicators=indicators,
         )
 
+        symbols = price_data.get_symbols(symbols)
+
         engine = Engine(price_data, symbols)
 
         engine.set_config(strategy["config"], [strategy["strategy"]])

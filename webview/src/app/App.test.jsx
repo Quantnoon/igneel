@@ -28,6 +28,10 @@ import { App } from "./App.jsx";
 
 const MANIFEST = [{
   name: "strategies/support_resistance",
+  botUrls: {
+    windows: "https://example.com/support-resistance-windows.ex5",
+    mac: "https://example.com/support-resistance-mac.ex5",
+  },
   env: { development: {
     df: [
       { name: "EURUSDm", path: "strategies/support_resistance/EURUSDm_df.csv" },
@@ -56,7 +60,7 @@ test("lists new strategy identities at their short routes", async () => {
   assert.equal(card.getAttribute("href"), "/support_resistance");
 });
 
-test("uses chart and results buttons for two-way navigation without top controls", async () => {
+test("uses chart and results navigation with strategy topbar controls", async () => {
   const user = userEvent.setup();
   setUrl("/support_resistance");
   render(<App />);
@@ -64,6 +68,22 @@ test("uses chart and results buttons for two-way navigation without top controls
   assert.equal(screen.getByTestId("market-chart").textContent, "Chart active EURUSDm strategies/support_resistance/EURUSDm_df.csv");
   assert.equal(screen.queryByRole("tab"), null);
   assert.equal(screen.queryByLabelText("Symbol"), null);
+  const header = screen.getByRole("banner");
+  const headerLayout = header.firstElementChild;
+  assert.match(headerLayout.className, /grid-cols-\[1fr_auto_1fr\]/);
+  assert.equal(headerLayout.children[1], header.querySelector("h1"));
+  assert.equal(screen.getByRole("link", { name: "Back to strategies" }).getAttribute("href"), "/");
+  const download = screen.getByRole("button", { name: "Download bot" });
+  await user.click(download);
+  const windowsOption = await screen.findByRole("menuitem", { name: "Windows" });
+  const macOption = screen.getByRole("menuitem", { name: "MacBook" });
+  assert.match(windowsOption.parentElement.className, /grid-cols-2/);
+  assert.equal(windowsOption.getAttribute("href"), "https://example.com/support-resistance-windows.ex5");
+  assert.equal(macOption.getAttribute("href"), "https://example.com/support-resistance-mac.ex5");
+  assert.ok(windowsOption.hasAttribute("download"));
+  assert.ok(macOption.hasAttribute("download"));
+  assert.ok(windowsOption.querySelector('[data-testid="windows-icon"]'));
+  assert.ok(macOption.querySelector('[data-testid="apple-icon"]'));
 
   await user.click(screen.getByRole("button", { name: "Chart select GBPUSDm" }));
   await waitFor(() => assert.equal(screen.getByTestId("market-chart").textContent, "Chart active GBPUSDm strategies/support_resistance/GBPUSDm_df.csv"));
@@ -100,8 +120,39 @@ test("centers powered-by branding in the app header", async () => {
   render(<App />);
   const header = await screen.findByRole("banner");
   assert.match(header.querySelector("h1").className, /text-center/);
-  assert.match(header.firstElementChild.className, /justify-center/);
+  assert.match(header.firstElementChild.className, /grid-cols-\[1fr_auto_1fr\]/);
   assert.doesNotMatch(header.firstElementChild.className, /min-h-20/);
+});
+
+test("keeps the platform menu available and disables options without URLs", async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal("fetch", vi.fn(async (url) => String(url).startsWith("strategies/strategies.json")
+    ? response(JSON.stringify([{ ...MANIFEST[0], botUrls: { mac: MANIFEST[0].botUrls.mac } }]))
+    : response(JSON.stringify(CONFIG))));
+  setUrl("/support_resistance");
+  render(<App />);
+  await screen.findByTestId("market-chart");
+  await user.click(screen.getByRole("button", { name: "Download bot" }));
+  const windowsOption = await screen.findByRole("menuitem", { name: "Windows" });
+  const macOption = screen.getByRole("menuitem", { name: "MacBook" });
+  assert.equal(windowsOption.getAttribute("aria-disabled"), "true");
+  assert.equal(windowsOption.hasAttribute("href"), false);
+  assert.equal(macOption.getAttribute("href"), MANIFEST[0].botUrls.mac);
+});
+
+test("opens the platform menu with both options disabled when no URLs are available", async () => {
+  const user = userEvent.setup();
+  vi.stubGlobal("fetch", vi.fn(async (url) => String(url).startsWith("strategies/strategies.json")
+    ? response(JSON.stringify([{ ...MANIFEST[0], botUrls: undefined }]))
+    : response(JSON.stringify(CONFIG))));
+  setUrl("/support_resistance");
+  render(<App />);
+  await screen.findByTestId("market-chart");
+  const trigger = screen.getByRole("button", { name: "Download bot" });
+  assert.equal(trigger.disabled, false);
+  await user.click(trigger);
+  assert.equal((await screen.findByRole("menuitem", { name: "Windows" })).getAttribute("aria-disabled"), "true");
+  assert.equal(screen.getByRole("menuitem", { name: "MacBook" }).getAttribute("aria-disabled"), "true");
 });
 
 test("reports malformed strategy configuration", async () => {

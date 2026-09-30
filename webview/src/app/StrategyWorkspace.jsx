@@ -55,7 +55,7 @@ export function StrategyWorkspace({ strategy }) {
 
   return (
     <Tabs value={activeTab} onValueChange={selectTab} className="h-full gap-0 overflow-hidden bg-background">
-      <AppHeader />
+      <AppHeader showBack botUrls={strategy.botUrls} />
       <main className="relative min-h-0 flex-1">
         {(configLoading || configError || resourceError || !selectedSymbol) ? (
           <div className="mx-auto w-full max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
