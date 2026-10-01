@@ -46,6 +46,8 @@ const { chart, chartApi, chartDrawings, zoomHandlers, QFChart } = vi.hoisted(() 
 vi.mock("@qfo/qfchart", () => ({ QFChart }));
 
 import { MarketChartPage, qfChartOptions } from "./MarketChartPage.jsx";
+import { clearCsvDatasetCache } from "../../shared/api/fetch-csv-chunks.js";
+import { clearCachedText } from "../../shared/api/fetch-cached-text.js";
 import { CONSOLIDATION_HOTSPOT_DRAWING_ID } from "./lib/consolidation-hotspots.js";
 import { SESSION_BOUNDARY_DRAWING_ID } from "./lib/session-boundaries.js";
 
@@ -73,6 +75,8 @@ let mediaMatches = false;
 let mediaChangeListener;
 
 beforeEach(() => {
+  clearCsvDatasetCache();
+  clearCachedText();
   vi.clearAllMocks();
   chartDrawings.clear();
   zoomHandlers.clear();
@@ -132,22 +136,100 @@ test("creates a QFChart with market data, filled-zone indicators, and result tra
   assert.deepEqual(chartApi.setOption.mock.calls[3][0], { yAxis: [{ min: 88.9, max: 113.1 }] });
 });
 
-test("loads and prepends the next older chunk at the left edge while preserving the visible category range", async () => {
+test("shows the full chart skeleton while the selected symbol makes its first load", () => {
+  render(<MarketChartPage
+    active
+    config={config}
+    symbol="Volatility 25 Index"
+    symbols={["Volatility 25 Index", "EURUSD"]}
+    pendingSymbol="EURUSD"
+    symbolMenuOpen
+    onSymbolChange={() => {}}
+    onSymbolMenuOpenChange={() => {}}
+    dfPath="df.csv"
+    resultPath="result.json"
+  />);
+  assert.ok(screen.getByRole("status", { name: "Loading chart" }));
+  assert.equal(screen.getByTestId("market-chart-skeleton") !== null, true);
+  assert.ok(screen.getByRole("combobox", { name: "Chart symbol" }));
+  assert.ok(screen.getByTestId("symbol-activation-spinner"));
+});
+
+test("keeps visited symbol charts mounted and reuses their data and local chart state", async () => {
+  function ChartPool({ selected }) {
+    return ["EURUSD", "GBPUSD"].map((symbol) => (
+      <MarketChartPage
+        key={symbol}
+        active={selected === symbol}
+        visible={selected === symbol}
+        config={{ ...config, symbol }}
+        symbol={symbol}
+        symbols={["EURUSD", "GBPUSD"]}
+        onSymbolChange={() => {}}
+        dfPath={`df-${symbol}.csv`}
+        resultPath="shared-result.json"
+      />
+    ));
+  }
+
+  globalThis.fetch = vi.fn((url) => {
+    const path = String(url);
+    const body = path.startsWith("df-") ? csv : results;
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(body) });
+  });
+  const view = render(<ChartPool selected="EURUSD" />);
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
+  fireEvent.click(screen.getByRole("button", { name: /Support Zone/ }));
+  assert.equal(screen.getByRole("button", { name: /Support Zone/ }).getAttribute("aria-pressed"), "false");
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df-EURUSD.csv")).length, 1);
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("shared-result.json")).length, 1);
+
+  view.rerender(<ChartPool selected="GBPUSD" />);
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 2));
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df-GBPUSD.csv")).length, 1);
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("shared-result.json")).length, 1);
+
+  view.rerender(<ChartPool selected="EURUSD" />);
+  assert.equal(QFChart.mock.calls.length, 2, "returning to EURUSD reuses its QFChart instance");
+  assert.equal(chart.destroy.mock.calls.length, 0, "switching symbols does not destroy either chart");
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df-EURUSD.csv")).length, 1);
+  assert.equal(screen.getByRole("button", { name: /Support Zone/ }).getAttribute("aria-pressed"), "false");
+});
+
+test("shows an error and retries a failed first CSV load", async () => {
+  let dfRequestCount = 0;
+  const onChartActivationError = vi.fn();
+  globalThis.fetch = vi.fn((url) => {
+    if (String(url).startsWith("df.csv")) {
+      dfRequestCount += 1;
+      if (dfRequestCount === 1) return Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve("Unavailable") });
+    }
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(String(url).startsWith("df.csv") ? csv : results) });
+  });
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" onChartActivationError={onChartActivationError} />);
+  assert.ok(screen.getByRole("status", { name: "Loading chart" }));
+  await screen.findByRole("alert");
+  assert.deepEqual(onChartActivationError.mock.calls, [["Volatility 25 Index"]]);
+  assert.ok(screen.getByRole("button", { name: "Retry" }));
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
+  assert.equal(dfRequestCount, 2);
+});
+
+test("loads the newest 1,000-row chunk first, prepends older cached rows and preserves the visible range", async () => {
   const newestChunk = [
     "time,open_M15,high_M15,low_M15,close_M15,volume_M15,support_low_H4,support_high_H4",
     "2023-11-14 22:28:20,105,112,101,108,11,90,96",
     "2023-11-14 22:43:20,108,114,106,110,12,90,96",
   ].join("\n");
-  const olderChunk = [
-    "time,open_M15,high_M15,low_M15,close_M15,volume_M15,support_low_H4,support_high_H4",
-    "2023-11-14 21:58:20,98,104,96,100,9,90,96",
-    "2023-11-14 22:13:20,100,110,95,105,10,90,96",
-  ].join("\n");
+  const olderRows = Array.from({ length: 1000 }, (_, index) => {
+    const time = new Date(Date.UTC(2023, 10, 4) + index * 15 * 60_000).toISOString().replace("T", " ").slice(0, 19);
+    return `${time},98,104,96,100,9,90,96`;
+  });
+  const fullCsv = [newestChunk.split("\n")[0], ...olderRows, ...newestChunk.split("\n").slice(1)].join("\n");
   globalThis.fetch = vi.fn((url) => {
     const path = String(url);
-    if (path.includes("index.json")) return Promise.resolve({ ok: true, text: () => Promise.resolve('{"chunks":["chunk-000001.csv","chunk-000000.csv"]}') });
-    if (path.includes("chunk-000001.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(newestChunk) });
-    if (path.includes("chunk-000000.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(olderChunk) });
+    if (path.startsWith("df.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(fullCsv) });
     return Promise.resolve({ ok: true, text: () => Promise.resolve(results) });
   });
 
@@ -157,53 +239,45 @@ test("loads and prepends the next older chunk at the left edge while preserving 
 
   zoomHandlers.forEach((handler) => { handler(); handler(); });
   await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
-  assert.deepEqual(chart.setMarketData.mock.calls[1][0].map(({ time }) => time), [
-    Date.parse("2023-11-14T21:45:00Z"),
-    Date.parse("2023-11-14T22:00:00Z"),
-    Date.parse("2023-11-14T22:15:00Z"),
-    Date.parse("2023-11-14T22:30:00Z"),
-  ]);
+  assert.equal(chart.setMarketData.mock.calls[1][0].length, 1002);
+  assert.equal(chart.setMarketData.mock.calls[1][0][0].time, Date.parse("2023-11-04T00:00:00Z"));
+  assert.equal(chart.setMarketData.mock.calls[1][0].at(-1).time, Date.parse("2023-11-14T22:30:00Z"));
   assert.deepEqual(chartApi.dispatchAction.mock.calls.at(-1)[0], {
     type: "dataZoom",
     startValue: "first",
     endValue: "last",
   });
-  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).includes("chunk-000000.csv")).length, 1);
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df.csv")).length, 1, "panning uses the in-memory chunk without another CSV request");
 });
 
-test("ignores a pending older-chunk response after the timeframe changes", async () => {
+test("keeps the expanded cached rows aligned after a timeframe change", async () => {
   const header = "time,open_M15,high_M15,low_M15,close_M15,volume_M15,open_H1,high_H1,low_H1,close_H1,volume_H1,support_low_H4,support_high_H4";
   const newestChunk = [
     header,
     "2023-11-14 22:28:20,105,112,101,108,11,100,115,95,110,21,90,96",
     "2023-11-14 22:43:20,108,114,106,110,12,100,115,95,110,21,90,96",
   ].join("\n");
-  const olderChunk = [header, "2023-11-14 21:58:20,98,104,96,100,9,95,110,90,105,20,90,96"].join("\n");
-  let resolveOlder;
-  let olderSignal;
-  globalThis.fetch = vi.fn((url, options = {}) => {
+  const olderRows = Array.from({ length: 1000 }, (_, index) => {
+    const time = new Date(Date.UTC(2023, 10, 4) + index * 15 * 60_000).toISOString().replace("T", " ").slice(0, 19);
+    return `${time},98,104,96,100,9,95,110,90,105,20,90,96`;
+  });
+  const fullCsv = [header, ...olderRows, ...newestChunk.split("\n").slice(1)].join("\n");
+  globalThis.fetch = vi.fn((url) => {
     const path = String(url);
-    if (path.includes("index.json")) return Promise.resolve({ ok: true, text: () => Promise.resolve('{"chunks":["chunk-000001.csv","chunk-000000.csv"]}') });
-    if (path.includes("chunk-000001.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(newestChunk) });
-    if (path.includes("chunk-000000.csv")) {
-      olderSignal = options.signal;
-      return new Promise((resolve) => { resolveOlder = resolve; });
-    }
+    if (path.startsWith("df.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(fullCsv) });
     return Promise.resolve({ ok: true, text: () => Promise.resolve(results) });
   });
 
   render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
   await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 1));
   zoomHandlers.forEach((handler) => handler());
-  await waitFor(() => assert.equal(typeof resolveOlder, "function"));
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
+  assert.equal(chart.setMarketData.mock.calls[1][0].length, 1002);
 
   fireEvent.click(screen.getByRole("button", { name: "H1" }));
-  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
-  assert.equal(olderSignal.aborted, true);
-  resolveOlder({ ok: true, text: () => Promise.resolve(olderChunk) });
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(chart.setMarketData.mock.calls.length, 2);
-  assert.equal(chart.setMarketData.mock.calls[1][0].length, 1);
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 3));
+  assert.equal(chart.setMarketData.mock.calls[2][0].length, 251);
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df.csv")).length, 1);
 });
 
 test("registers the session-boundary renderer and adds its markers after market data loads", async () => {
@@ -319,7 +393,7 @@ test("builds the Quantnoon QFChart theme without the built-in databox", () => {
 
 test("uses a compact text result button with the primary-blue icon", async () => {
   render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" onViewBacktestResults={() => {}} />);
-  const button = screen.getByRole("button", { name: "View Backtest Results" });
+  const button = await screen.findByRole("button", { name: "View Backtest Results" });
   assert.match(button.className, /text-foreground/);
   assert.doesNotMatch(button.className, /bg-\[#0f8eff\]/);
   assert.match(button.querySelector("svg").getAttribute("class"), /text-\[#0f8eff\]/);
@@ -457,9 +531,10 @@ test("chart symbol selector calls the shared workspace selection callback", asyn
     resultPath="result.json"
   />);
 
+  await screen.findByRole("combobox", { name: "Chart symbol" });
+  await waitFor(() => screen.getByRole("button", { name: "M15" }));
   const selector = screen.getByRole("combobox", { name: "Chart symbol" });
   assert.match(selector.textContent, /Volatility 25 Index/);
-  await waitFor(() => screen.getByRole("button", { name: "M15" }));
   assert.match(screen.getByRole("button", { name: "M15" }).className, /bg-\[#0f8eff\]\/15/);
   const resultsButton = screen.getByRole("button", { name: /View Backtest Results/ });
   assert.doesNotMatch(resultsButton.className, /bg-\[#0f8eff\]/);

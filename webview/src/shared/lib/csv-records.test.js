@@ -10,7 +10,11 @@ test("splits short CSV files into one header-bearing chunk", () => {
   assert.deepEqual(chunks, [`time,value\n${csvRow(1)}\n${csvRow(2)}`]);
 });
 
-test("splits exact multiples and remaining rows into chunks of the requested size", () => {
+test("splits exact 1,000-row multiples and a remaining partial chunk", () => {
+  const exactRows = Array.from({ length: 2000 }, (_, index) => csvRow(index));
+  const exactChunks = chunkCsvText(["time,value", ...exactRows].join("\n"), 1000);
+  assert.deepEqual(exactChunks.map((chunk) => splitCsvRecords(chunk).length), [1001, 1001]);
+
   const rows = Array.from({ length: 2003 }, (_, index) => csvRow(index));
   const chunks = chunkCsvText(["time,value", ...rows].join("\n"), 1000);
   assert.deepEqual(chunks.map((chunk) => splitCsvRecords(chunk).length), [1001, 1001, 4]);

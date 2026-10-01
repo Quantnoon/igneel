@@ -3,10 +3,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { QFChart } from "@qfo/qfchart";
 import { BarChart3 } from "lucide-react";
 
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert } from "../../shared/components/Alert.jsx";
-import { fetchText } from "../../shared/api/fetch-resource.js";
-import { loadInitialCsvChunk, loadOlderCsvChunk } from "../../shared/api/fetch-csv-chunks.js";
+import { fetchCachedText } from "../../shared/api/fetch-cached-text.js";
+import { loadCsvDataset } from "../../shared/api/fetch-csv-chunks.js";
 import { availableMarketTimeframes, convertMarketData } from "../../shared/lib/market-data.js";
 import { prependCsvChunk } from "../../shared/lib/csv-records.js";
 import { flattenResults } from "../backtest-results/lib/backtest-results-data.js";
@@ -16,6 +15,8 @@ import { applyIndicatorSeriesColors, buildIndicator, chartAddOptions, indicatorS
 import { buildSessionBoundariesDrawing, sessionBoundariesRenderer } from "./lib/session-boundaries.js";
 import { priceLevelColumns, visiblePriceRange } from "./lib/visible-price-range.js";
 import { useMediaQuery } from "../../shared/hooks/use-media-query.js";
+import { MarketChartSkeleton } from "./MarketChartSkeleton.jsx";
+import { MarketChartSymbolSelect } from "./MarketChartSymbolSelect.jsx";
 
 const DEFAULT_ZOOM_START_PERCENT = 75;
 const CANDLES_PER_CHUNK = 1000;
@@ -112,16 +113,17 @@ function isNearLoadedLeftEdge(chart, candleCount) {
   return startIndex <= Math.min(CANDLES_PER_CHUNK * 0.1, candleCount * 0.1);
 }
 
-export function MarketChartPage({ active, config, dfPath, resultPath, symbol, symbols = [], onSymbolChange, onViewBacktestResults }) {
+export function MarketChartPage({ active, visible = true, config, dfPath, resultPath, symbol, symbols = [], onSymbolChange, onViewBacktestResults, pendingSymbol, symbolMenuOpen, onSymbolMenuOpenChange, onChartActivationReady, onChartActivationError }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const chartKeyRef = useRef(null);
   const observerRef = useRef(null);
   const loadedChartRecordsRef = useRef(null);
   const chartContentRef = useRef({ indicators: [], drawingIds: [], colorHandler: null });
-  const pagingRef = useRef({ key: "", chunks: null, nextChunkIndex: null, loading: false, exhausted: false, controller: null });
+  const pagingRef = useRef({ key: "", chunks: null, nextChunkIndex: null, loading: false, exhausted: false });
   const pagingKeyRef = useRef("");
   const [state, setState] = useState({ data: null, error: "", loading: false });
+  const [retryAttempt, setRetryAttempt] = useState(0);
   const [timeframe, setTimeframe] = useState(config.entryTf);
   const [indicatorItems, setIndicatorItems] = useState([]);
   const [indicatorVisibility, setIndicatorVisibility] = useState({});
@@ -144,26 +146,28 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
       return { records: null, error: `Chart initialization failed: ${error.message ?? String(error)}` };
     }
   }, [state.data, timeframe]);
+  const availableTimeframes = state.data?.availableTimeframes ?? [];
 
   useEffect(() => {
     if (!active || !dfPath || state.data?.dfPath === dfPath) return undefined;
     let mounted = true;
     const controller = new AbortController();
     setState({ data: null, error: "", loading: true });
-    Promise.all([loadInitialCsvChunk(dfPath, controller.signal), fetchText(resultPath, controller.signal)])
-      .then(([csv, resultText]) => {
+    Promise.all([loadCsvDataset(dfPath, controller.signal), fetchCachedText(resultPath, controller.signal)])
+      .then(([dataset, resultText]) => {
+        const newestChunkIndex = dataset.chunks.length - 1;
+        const csvText = dataset.chunks[newestChunkIndex] ?? dataset.text;
         const trades = flattenResults(JSON.parse(resultText)).find((result) => result.symbol === symbol)?.trades ?? [];
         if (mounted) {
           pagingRef.current = {
             key: `${dfPath}:${timeframe}`,
-            chunks: csv.chunks,
-            nextChunkIndex: csv.nextChunkIndex,
+            chunks: dataset.chunks,
+            nextChunkIndex: newestChunkIndex - 1,
             loading: false,
-            exhausted: !csv.chunks || csv.nextChunkIndex >= csv.chunks.length,
-            controller: null,
+            exhausted: newestChunkIndex <= 0,
           };
           setState({
-            data: { config, csvText: csv.csvText, chunks: csv.chunks, nextChunkIndex: csv.nextChunkIndex, availableTimeframes: availableMarketTimeframes(csv.csvText), trades, dfPath },
+            data: { config, csvText, chunks: dataset.chunks, nextChunkIndex: newestChunkIndex - 1, availableTimeframes: availableMarketTimeframes(csvText), trades, dfPath },
             error: "",
             loading: false,
           });
@@ -172,23 +176,15 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
       .catch((error) => {
         if (mounted && error.name !== "AbortError") {
           setState({ data: null, error: `Chart initialization failed: ${error.message ?? String(error)}`, loading: false });
+          onChartActivationError?.(symbol);
         }
       });
     return () => { mounted = false; controller.abort(); };
-  }, [active, config, dfPath, resultPath, symbol, state.data?.dfPath, timeframe]);
+  }, [active, config, dfPath, onChartActivationError, resultPath, retryAttempt, symbol, state.data?.dfPath, timeframe]);
 
   useEffect(() => {
     const key = `${dfPath}:${timeframe}`;
     pagingKeyRef.current = key;
-    if (pagingRef.current.loading && pagingRef.current.key !== key) {
-      pagingRef.current.controller?.abort();
-      pagingRef.current.loading = false;
-    }
-    return () => {
-      if (pagingRef.current.key !== key) return;
-      pagingRef.current.controller?.abort();
-      pagingRef.current.loading = false;
-    };
   }, [dfPath, timeframe]);
 
   useEffect(() => {
@@ -273,7 +269,7 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
 
   useEffect(() => {
     const chart = chartRef.current;
-    if (!chart || !state.data || !chartData?.records) return undefined;
+    if (!active || !chart || !state.data || !chartData?.records) return undefined;
     const visibleIndicators = indicatorItems
       .filter((item) => indicatorVisibility[item.visibilityKey] !== false)
       .map((item) => item.entry);
@@ -284,41 +280,29 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
       if (!state.data.chunks || paging.exhausted || paging.loading || pagingKeyRef.current !== key) return;
       if (!isNearLoadedLeftEdge(chart, chartData.records.length)) return;
       const chunkIndex = paging.nextChunkIndex;
-      if (chunkIndex === null || chunkIndex >= state.data.chunks.length) {
+      if (chunkIndex === null || chunkIndex < 0 || chunkIndex >= state.data.chunks.length) {
         paging.exhausted = true;
         return;
       }
-      const controller = new AbortController();
       paging.key = key;
       paging.loading = true;
-      paging.controller = controller;
-      loadOlderCsvChunk(dfPath, state.data.chunks, chunkIndex, controller.signal).then((olderCsv) => {
-        if (controller.signal.aborted || pagingKeyRef.current !== key) return;
-        if (!olderCsv) {
+      try {
+        const olderCsv = state.data.chunks[chunkIndex];
+        if (!olderCsv?.trim()) {
           paging.exhausted = true;
           return;
         }
-        const olderRows = olderCsv.trim() ? olderCsv : "";
-        if (!olderRows) {
-          paging.exhausted = true;
-          return;
-        }
-        const mergedCsv = prependCsvChunk(olderRows, state.data.csvText);
-        paging.nextChunkIndex = chunkIndex + 1;
-        paging.exhausted = paging.nextChunkIndex >= state.data.chunks.length;
+        const mergedCsv = prependCsvChunk(olderCsv, state.data.csvText);
+        paging.nextChunkIndex = chunkIndex - 1;
+        paging.exhausted = paging.nextChunkIndex < 0;
         setState((previous) => previous.data?.dfPath === dfPath
           ? { ...previous, data: { ...previous.data, csvText: mergedCsv, nextChunkIndex: paging.nextChunkIndex }, error: "" }
           : previous);
-      }).catch((error) => {
-        if (!controller.signal.aborted && pagingKeyRef.current === key) {
-          setState((previous) => ({ ...previous, error: `Unable to load older candles: ${error.message ?? String(error)}` }));
-        }
-      }).finally(() => {
-        if (paging.controller === controller) {
-          paging.loading = false;
-          paging.controller = null;
-        }
-      });
+      } catch (error) {
+        setState((previous) => ({ ...previous, error: `Unable to load older candles: ${error.message ?? String(error)}` }));
+      } finally {
+        paging.loading = false;
+      }
     };
     const handleDataZoom = () => {
       updatePriceScale();
@@ -327,7 +311,7 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
     updatePriceScale();
     chart.events.on("chart:dataZoom", handleDataZoom);
     return () => chart.events.off("chart:dataZoom", handleDataZoom);
-  }, [chartData, dfPath, indicatorItems, indicatorVisibility, isMobile, state.data, timeframe]);
+  }, [active, chartData, dfPath, indicatorItems, indicatorVisibility, isMobile, state.data, timeframe]);
 
   useEffect(() => () => {
     observerRef.current?.disconnect();
@@ -337,12 +321,20 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
     chartRef.current = null;
     chartKeyRef.current = null;
     loadedChartRecordsRef.current = null;
-    pagingRef.current.controller?.abort();
   }, []);
 
   useEffect(() => {
-    if (active) chartRef.current?.resize();
-  }, [active]);
+    if (!active || !chartRef.current || !state.data || !chartData?.records) return undefined;
+    const chart = chartRef.current;
+    chart.resize();
+    const frame = requestAnimationFrame(() => onChartActivationReady?.(symbol));
+    return () => cancelAnimationFrame(frame);
+  }, [active, chartData, onChartActivationReady, state.data, symbol]);
+
+  useEffect(() => {
+    if (!active || !state.data) return;
+    if (chartData?.error || availableTimeframes.length === 0) onChartActivationError?.(symbol);
+  }, [active, availableTimeframes.length, chartData, onChartActivationError, state.data, symbol]);
 
   function setIndicatorShown(item, shown) {
     setIndicatorVisibility((previous) => ({ ...previous, [item.visibilityKey]: shown }));
@@ -371,14 +363,22 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
     else chart.removeDrawing(drawing.id);
   }
 
-  const availableTimeframes = state.data?.availableTimeframes ?? [];
   const displayError = state.error || chartData?.error || (state.data && availableTimeframes.length === 0
     ? "Chart data has no timeframe with complete OHLC columns."
     : "");
+  const showSkeleton = !state.data && !state.error && (state.loading || active);
   return (
-    <div className="relative flex h-full min-h-0 w-full flex-col overflow-hidden">
+    <div hidden={!visible} className={`relative ${visible ? "flex" : "hidden"} h-full min-h-0 w-full flex-col overflow-hidden`}>
+      {showSkeleton ? <MarketChartSkeleton
+        symbol={symbol}
+        symbols={symbols}
+        pendingSymbol={pendingSymbol}
+        symbolMenuOpen={symbolMenuOpen}
+        onSymbolMenuOpenChange={onSymbolMenuOpenChange}
+        onSymbolChange={onSymbolChange}
+      /> : <>
           {displayError && <div className="absolute inset-x-4 top-4 z-30"><Alert kind="error" role="alert">{displayError}</Alert></div>}
-          {state.loading && <div className="absolute inset-x-4 top-4 z-10"><Alert role="status">Loading chart data…</Alert></div>}
+          {state.error && !state.data && <button type="button" onClick={() => { setState({ data: null, error: "", loading: true }); setRetryAttempt((attempt) => attempt + 1); }} className="absolute right-4 top-4 z-30 min-h-9 rounded-md border border-foreground/15 bg-[#111111] px-3 text-sm font-semibold text-foreground hover:bg-foreground/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0f8eff]">Retry</button>}
           <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[#0a0a0a]">
             <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label={`${symbol} market chart`}>
               <div className="flex flex-wrap items-center gap-3 border-b border-foreground/10 px-4 py-2">
@@ -395,16 +395,15 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
                     </button>
                   ))}
                 </div>
-                {symbols.length > 0 && (
-                  <Select value={symbol} onValueChange={onSymbolChange}>
-                    <SelectTrigger aria-label="Chart symbol" className="h-10! min-w-36 border-foreground/15 bg-[#111111] text-sm text-foreground hover:bg-[#171717]">
-                      <SelectValue placeholder="Select symbol" />
-                    </SelectTrigger>
-                    <SelectContent className="border-foreground/15 bg-[#111111] text-foreground">
-                      {symbols.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
-                )}
+                {symbols.length > 0 && <MarketChartSymbolSelect
+                  symbol={symbol}
+                  symbols={symbols}
+                  pendingSymbol={pendingSymbol}
+                  visible={visible}
+                  open={symbolMenuOpen}
+                  onOpenChange={onSymbolMenuOpenChange}
+                  onValueChange={onSymbolChange}
+                />}
                 {isMobile && (
                   <button
                     type="button"
@@ -465,6 +464,7 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
               )}
             </aside>
           </div>
+      </>}
     </div>
   );
 }

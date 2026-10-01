@@ -1,44 +1,65 @@
 import { fetchText } from "./fetch-resource.js";
+import { chunkCsvText } from "../lib/csv-records.js";
 
-function chunkManifestPath(csvPath) {
-  return `${csvPath}.chunks/index.json`;
+const CANDLES_PER_CHUNK = 1000;
+const csvCache = new Map();
+
+function subscribe(entry, signal) {
+  if (signal?.aborted) return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
+  entry.consumers += 1;
+  return new Promise((resolve, reject) => {
+    let finished = false;
+    const release = () => {
+      if (finished) return;
+      finished = true;
+      signal?.removeEventListener("abort", abort);
+      entry.consumers -= 1;
+    };
+    const abort = () => {
+      release();
+      if (!entry.settled && entry.consumers === 0) {
+        entry.controller.abort();
+        if (csvCache.get(entry.url) === entry) csvCache.delete(entry.url);
+      }
+      reject(new DOMException("The operation was aborted.", "AbortError"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+    entry.promise.then(
+      (value) => { release(); resolve(value); },
+      (error) => { release(); reject(error); },
+    );
+  });
 }
 
-export async function loadInitialCsvChunk(csvPath, signal) {
-  let manifestText;
-  try {
-    manifestText = await fetchText(chunkManifestPath(csvPath), signal);
-  } catch (error) {
-    if (error.status === 404) {
-      return { csvText: await fetchText(csvPath, signal), chunks: null, nextChunkIndex: null };
-    }
-    throw error;
+/** Fetch a CSV URL once per session and retain its parsed, chronological chunks in memory. */
+export function loadCsvDataset(csvUrl, signal) {
+  if (signal?.aborted) return Promise.reject(new DOMException("The operation was aborted.", "AbortError"));
+  let entry = csvCache.get(csvUrl);
+  if (!entry) {
+    entry = { url: csvUrl, consumers: 0, settled: false, controller: new AbortController() };
+    entry.promise = fetchText(csvUrl, entry.controller.signal)
+      .then((text) => ({ text, chunks: chunkCsvText(text, CANDLES_PER_CHUNK) }))
+      .then((dataset) => {
+        entry.settled = true;
+        if (csvCache.get(csvUrl) === entry) csvCache.set(csvUrl, { dataset });
+        return dataset;
+      })
+      .catch((error) => {
+        entry.settled = true;
+        if (csvCache.get(csvUrl) === entry) csvCache.delete(csvUrl);
+        throw error;
+      });
+    csvCache.set(csvUrl, entry);
   }
-
-  let manifest;
-  try {
-    manifest = JSON.parse(manifestText);
-  } catch {
-    // Static hosts with SPA rewrites may return index.html for a missing legacy chunk index.
-    if (/^\s*</.test(manifestText) || /^\uFEFF?time,/i.test(manifestText)) {
-      return { csvText: await fetchText(csvPath, signal), chunks: null, nextChunkIndex: null };
-    }
-    throw new Error(`${chunkManifestPath(csvPath)} is not valid JSON.`);
-  }
-  if (!Array.isArray(manifest?.chunks) || manifest.chunks.some((chunk) => (
-    typeof chunk !== "string" || !/^chunk-\d{6,}\.csv$/.test(chunk)
-  ))) {
-    throw new Error(`${chunkManifestPath(csvPath)} must contain a chunks array.`);
-  }
-  if (manifest.chunks.length === 0) {
-    return { csvText: await fetchText(csvPath, signal), chunks: null, nextChunkIndex: null };
-  }
-
-  const csvText = await fetchText(`${csvPath}.chunks/${manifest.chunks[0]}`, signal);
-  return { csvText, chunks: manifest.chunks, nextChunkIndex: 1 };
+  if (entry.dataset) return Promise.resolve(entry.dataset);
+  return subscribe(entry, signal);
 }
 
-export async function loadOlderCsvChunk(csvPath, chunks, index, signal) {
-  if (!Array.isArray(chunks) || index < 0 || index >= chunks.length) return null;
-  return fetchText(`${csvPath}.chunks/${chunks[index]}`, signal);
+// Shared by CSV resource consumers such as the results timeline and market chart.
+export async function fetchCachedCsvText(csvUrl, signal) {
+  return (await loadCsvDataset(csvUrl, signal)).text;
+}
+
+export function clearCsvDatasetCache() {
+  csvCache.clear();
 }
