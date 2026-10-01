@@ -28,7 +28,7 @@ function StrategyRoute({ strategies, error, loading, env }) {
     );
   }
 
-  if (strategy) return <StrategyWorkspace key={strategy.name} strategy={strategy} />;
+  if (strategy) return <StrategyWorkspace key={strategy.name} strategy={strategy} strategies={strategies ?? []} />;
 
   return (
     <AppShell>

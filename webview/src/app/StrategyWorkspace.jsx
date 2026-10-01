@@ -17,7 +17,7 @@ function tabFromHash(hashValue) {
   return VALID_TABS.has(hash) ? hash : "chart";
 }
 
-export function StrategyWorkspace({ strategy }) {
+export function StrategyWorkspace({ strategy, strategies = [] }) {
   const location = useLocation();
   const navigate = useNavigate();
   const activeTab = tabFromHash(location.hash);
@@ -79,7 +79,7 @@ export function StrategyWorkspace({ strategy }) {
 
   return (
     <Tabs value={activeTab} onValueChange={selectTab} className="h-full gap-0 overflow-hidden bg-background">
-      <AppHeader showBack botUrls={strategy.botUrls} />
+      <AppHeader showBack botUrls={strategy.botUrls} strategies={strategies} currentStrategy={strategy.name} />
       <main className="relative min-h-0 flex-1">
         {showSkeleton ? (
           <div className="absolute inset-0">

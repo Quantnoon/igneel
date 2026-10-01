@@ -47,16 +47,6 @@ export function BacktestResultsPage({ active, resultPath, dfPath, symbol, symbol
       <div className="flex flex-col items-stretch justify-between gap-3 md:flex-row md:items-end">
         <PriceDataTimeline dfPath={dfPath} />
         <div className="flex items-center justify-between gap-4 md:justify-end">
-          {symbols.length > 0 && (
-            <Select value={symbol} onValueChange={onSymbolChange}>
-              <SelectTrigger aria-label="Backtest symbol" className="h-10! min-w-36 border-foreground/15 bg-[#111111] text-sm text-foreground hover:bg-[#171717]">
-                <SelectValue placeholder="Select symbol" />
-              </SelectTrigger>
-              <SelectContent className="border-foreground/15 bg-[#111111] text-foreground">
-                {symbols.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
-              </SelectContent>
-            </Select>
-          )}
           {onBackToChart && (
             <button
               type="button"
@@ -66,6 +56,16 @@ export function BacktestResultsPage({ active, resultPath, dfPath, symbol, symbol
               <ArrowLeft aria-hidden="true" className="size-4" />
               Back to Chart
             </button>
+          )}
+          {symbols.length > 0 && (
+            <Select value={symbol} onValueChange={onSymbolChange}>
+              <SelectTrigger aria-label="Backtest symbol" className="h-10! min-w-36 border-foreground/15 bg-[#111111] text-sm text-foreground hover:bg-[#171717]">
+                <SelectValue placeholder="Select symbol" />
+              </SelectTrigger>
+              <SelectContent className="border-foreground/15 bg-[#111111] text-foreground">
+                {symbols.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
+              </SelectContent>
+            </Select>
           )}
         </div>
       </div>

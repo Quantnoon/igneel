@@ -1,5 +1,8 @@
 import { ArrowLeft, ChevronDown, Download } from "lucide-react";
 import { Menu } from "@base-ui/react/menu";
+import { useLocation, useNavigate } from "react-router";
+
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 
 const menuItemClassName = "flex min-h-24 flex-col items-center justify-center gap-2 rounded-md px-3 py-3 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50";
 
@@ -19,19 +22,44 @@ function AppleIcon() {
   );
 }
 
-export function AppHeader({ showBack = false, botUrls = {} }) {
+export function AppHeader({ showBack = false, botUrls = {}, strategies = [], currentStrategy = "" }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  function selectStrategy(nextStrategy) {
+    if (!nextStrategy || nextStrategy === currentStrategy) return;
+    navigate({
+      pathname: `/${nextStrategy}`,
+      search: location.search,
+      hash: location.hash,
+    });
+  }
+
   return (
     <header className="z-10 shrink-0 border-b bg-background/90 backdrop-blur-md">
       <div className="mx-auto grid w-full max-w-[100rem] grid-cols-[1fr_auto_1fr] items-center px-4 py-2 sm:px-6 lg:px-8">
-        <div className="flex justify-self-start">
+        <div className="flex items-center gap-2 justify-self-start">
           {showBack && (
-            <a
-              href="/"
-              aria-label="Back to strategies"
+            <button
+              type="button"
+              aria-label="Back"
+              onClick={() => navigate("/")}
               className="inline-flex size-10 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               <ArrowLeft aria-hidden="true" className="size-5" />
-            </a>
+            </button>
+          )}
+          {showBack && strategies.length > 0 && (
+            <Select value={currentStrategy} onValueChange={selectStrategy}>
+              <SelectTrigger aria-label="Select strategy" className="h-10! min-w-44 border-foreground/15 bg-background text-sm text-foreground hover:bg-muted">
+                <SelectValue placeholder="Select strategy" />
+              </SelectTrigger>
+              <SelectContent className="border-foreground/15 bg-background text-foreground">
+                {strategies.map((strategy) => (
+                  <SelectItem key={strategy.name} value={strategy.name}>{strategy.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
           )}
         </div>
         <h1 className="text-center font-heading text-base font-medium tracking-tight">

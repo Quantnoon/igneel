@@ -52,6 +52,21 @@ const MANIFEST = [{
     config: "strategies/support_resistance/config.json",
     result: "strategies/support_resistance/result.json",
   }, production: { df: [], config: "", result: "" } },
+}, {
+  name: "strategies/consolidation",
+  botUrls: {},
+  env: { development: {
+    df: [
+      { name: "EURUSDm", path: "strategies/consolidation/EURUSDm_df.csv" },
+      { name: "GBPUSDm", path: "strategies/consolidation/GBPUSDm_df.csv" },
+    ],
+    config: "strategies/consolidation/config.json",
+    result: "strategies/consolidation/result.json",
+  }, production: { df: [], config: "", result: "" } },
+}, {
+  name: "strategies/unavailable_strategy",
+  botUrls: {},
+  env: { development: { df: [], config: "", result: "" }, production: { df: [], config: "", result: "" } },
 }];
 const CONFIG = { symbols: ["EURUSDm", "GBPUSDm"], entry_tf: "M15", indicators: [] };
 
@@ -89,17 +104,18 @@ test("uses the chart skeleton while the strategy configuration is loading", asyn
   assert.equal(screen.queryByRole("status", { name: "Loading chart" }), null);
 });
 
-test("matches strategy routes, reports unknown routes, and supports browser back navigation", async () => {
+test("uses React Router navigation to return to strategies without reloading", async () => {
   const user = userEvent.setup();
-  setUrl("/");
+  setUrl("/support_resistance#results");
   renderApp();
-  await user.click(await screen.findByRole("link", { name: /support_resistance/ }));
-  await waitForActiveChart();
-  assert.equal(window.location.pathname, "/support_resistance");
+  await screen.findByTestId("backtest-results");
 
-  window.history.back();
+  const manifestFetches = fetch.mock.calls.filter(([url]) => String(url).startsWith("strategies/strategies.json")).length;
+  await user.click(screen.getByRole("button", { name: "Back" }));
   await screen.findByRole("heading", { name: "Strategies" });
   assert.equal(window.location.pathname, "/");
+  assert.equal(window.location.hash, "");
+  assert.equal(fetch.mock.calls.filter(([url]) => String(url).startsWith("strategies/strategies.json")).length, manifestFetches);
 });
 
 test("renders not-found pages for an unknown strategy and a nested unknown path", async () => {
@@ -127,7 +143,9 @@ test("uses chart and results navigation with strategy topbar controls", async ()
   const headerLayout = header.firstElementChild;
   assert.match(headerLayout.className, /grid-cols-\[1fr_auto_1fr\]/);
   assert.equal(headerLayout.children[1], header.querySelector("h1"));
-  assert.equal(screen.getByRole("link", { name: "Back to strategies" }).getAttribute("href"), "/");
+  const backButton = screen.getByRole("button", { name: "Back" });
+  assert.match(backButton.parentElement.className, /gap-2/);
+  assert.ok(screen.getByRole("combobox", { name: "Select strategy" }));
   const download = screen.getByRole("button", { name: "Download bot" });
   await user.click(download);
   const windowsOption = await screen.findByRole("menuitem", { name: "Windows" });
@@ -154,6 +172,37 @@ test("uses chart and results navigation with strategy topbar controls", async ()
   await user.click(screen.getByRole("button", { name: "Back to Chart" }));
   assert.equal(activeChart().textContent, "Chart active EURUSDm strategies/support_resistance/EURUSDm_df.csv");
   assert.equal(window.location.hash, "#chart");
+});
+
+test("lists every manifest strategy in the top bar and preserves the tab when switching", async () => {
+  const user = userEvent.setup();
+  setUrl("/support_resistance#results");
+  renderApp();
+  await screen.findByTestId("backtest-results");
+
+  const strategySelect = screen.getByRole("combobox", { name: "Select strategy" });
+  assert.match(strategySelect.textContent, /support_resistance/);
+  await user.click(strategySelect);
+  assert.ok(await screen.findByRole("option", { name: "consolidation" }));
+  assert.ok(screen.getByRole("option", { name: "unavailable_strategy" }));
+  await user.click(screen.getByRole("option", { name: "consolidation" }));
+
+  await waitFor(() => assert.equal(window.location.pathname, "/consolidation"));
+  assert.equal(window.location.hash, "#results");
+  await waitFor(() => assert.match(screen.getByTestId("backtest-results").textContent, /Results active/));
+  assert.match(screen.getByRole("combobox", { name: "Select strategy" }).textContent, /consolidation/);
+});
+
+test("allows a manifest strategy with missing resources to show its configuration error", async () => {
+  const user = userEvent.setup();
+  setUrl("/support_resistance");
+  renderApp();
+  await waitForActiveChart();
+
+  await user.click(screen.getByRole("combobox", { name: "Select strategy" }));
+  await user.click(await screen.findByRole("option", { name: "unavailable_strategy" }));
+  assert.equal(window.location.pathname, "/unavailable_strategy");
+  assert.match((await screen.findByRole("alert")).textContent, /missing development resource URLs/);
 });
 
 test("restores the active workspace tab when browser back and forward changes the hash", async () => {
