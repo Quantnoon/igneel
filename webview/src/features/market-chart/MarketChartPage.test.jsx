@@ -16,6 +16,7 @@ const { chart, chartApi, chartDrawings, zoomHandlers, QFChart } = vi.hoisted(() 
       ],
     })),
     setOption: vi.fn(),
+    dispatchAction: vi.fn(),
   };
   const chartHost = {
     addDrawing: vi.fn((drawing) => drawings.set(drawing.id, drawing)),
@@ -129,6 +130,80 @@ test("creates a QFChart with market data, filled-zone indicators, and result tra
   zoomHandlers.forEach((handler) => handler());
   assert.equal(chartApi.setOption.mock.calls.length, 4);
   assert.deepEqual(chartApi.setOption.mock.calls[3][0], { yAxis: [{ min: 88.9, max: 113.1 }] });
+});
+
+test("loads and prepends the next older chunk at the left edge while preserving the visible category range", async () => {
+  const newestChunk = [
+    "time,open_M15,high_M15,low_M15,close_M15,volume_M15,support_low_H4,support_high_H4",
+    "2023-11-14 22:28:20,105,112,101,108,11,90,96",
+    "2023-11-14 22:43:20,108,114,106,110,12,90,96",
+  ].join("\n");
+  const olderChunk = [
+    "time,open_M15,high_M15,low_M15,close_M15,volume_M15,support_low_H4,support_high_H4",
+    "2023-11-14 21:58:20,98,104,96,100,9,90,96",
+    "2023-11-14 22:13:20,100,110,95,105,10,90,96",
+  ].join("\n");
+  globalThis.fetch = vi.fn((url) => {
+    const path = String(url);
+    if (path.includes("index.json")) return Promise.resolve({ ok: true, text: () => Promise.resolve('{"chunks":["chunk-000001.csv","chunk-000000.csv"]}') });
+    if (path.includes("chunk-000001.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(newestChunk) });
+    if (path.includes("chunk-000000.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(olderChunk) });
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(results) });
+  });
+
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 1));
+  assert.deepEqual(chart.setMarketData.mock.calls[0][0].map(({ time }) => time), [Date.parse("2023-11-14T22:15:00Z"), Date.parse("2023-11-14T22:30:00Z")]);
+
+  zoomHandlers.forEach((handler) => { handler(); handler(); });
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
+  assert.deepEqual(chart.setMarketData.mock.calls[1][0].map(({ time }) => time), [
+    Date.parse("2023-11-14T21:45:00Z"),
+    Date.parse("2023-11-14T22:00:00Z"),
+    Date.parse("2023-11-14T22:15:00Z"),
+    Date.parse("2023-11-14T22:30:00Z"),
+  ]);
+  assert.deepEqual(chartApi.dispatchAction.mock.calls.at(-1)[0], {
+    type: "dataZoom",
+    startValue: "first",
+    endValue: "last",
+  });
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).includes("chunk-000000.csv")).length, 1);
+});
+
+test("ignores a pending older-chunk response after the timeframe changes", async () => {
+  const header = "time,open_M15,high_M15,low_M15,close_M15,volume_M15,open_H1,high_H1,low_H1,close_H1,volume_H1,support_low_H4,support_high_H4";
+  const newestChunk = [
+    header,
+    "2023-11-14 22:28:20,105,112,101,108,11,100,115,95,110,21,90,96",
+    "2023-11-14 22:43:20,108,114,106,110,12,100,115,95,110,21,90,96",
+  ].join("\n");
+  const olderChunk = [header, "2023-11-14 21:58:20,98,104,96,100,9,95,110,90,105,20,90,96"].join("\n");
+  let resolveOlder;
+  let olderSignal;
+  globalThis.fetch = vi.fn((url, options = {}) => {
+    const path = String(url);
+    if (path.includes("index.json")) return Promise.resolve({ ok: true, text: () => Promise.resolve('{"chunks":["chunk-000001.csv","chunk-000000.csv"]}') });
+    if (path.includes("chunk-000001.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(newestChunk) });
+    if (path.includes("chunk-000000.csv")) {
+      olderSignal = options.signal;
+      return new Promise((resolve) => { resolveOlder = resolve; });
+    }
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(results) });
+  });
+
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 1));
+  zoomHandlers.forEach((handler) => handler());
+  await waitFor(() => assert.equal(typeof resolveOlder, "function"));
+
+  fireEvent.click(screen.getByRole("button", { name: "H1" }));
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
+  assert.equal(olderSignal.aborted, true);
+  resolveOlder({ ok: true, text: () => Promise.resolve(olderChunk) });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.equal(chart.setMarketData.mock.calls.length, 2);
+  assert.equal(chart.setMarketData.mock.calls[1][0].length, 1);
 });
 
 test("registers the session-boundary renderer and adds its markers after market data loads", async () => {

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { afterEach, beforeEach, test, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { BrowserRouter } from "react-router";
 
 vi.mock("../features/market-chart/MarketChartPage.jsx", () => ({
   MarketChartPage: ({ active, dfPath, symbol, symbols, onSymbolChange, onViewBacktestResults }) => (
@@ -45,6 +46,7 @@ const CONFIG = { symbols: ["EURUSDm", "GBPUSDm"], entry_tf: "M15", indicators: [
 
 function response(text) { return { ok: true, status: 200, text: async () => text }; }
 function setUrl(url) { window.history.replaceState(null, "", url); }
+function renderApp() { return render(<BrowserRouter><App /></BrowserRouter>); }
 
 beforeEach(() => {
   vi.stubGlobal("fetch", vi.fn(async (url) => String(url).startsWith("strategies/strategies.json")
@@ -55,15 +57,41 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); setUrl("
 
 test("lists new strategy identities at their short routes", async () => {
   setUrl("/");
-  render(<App />);
+  renderApp();
   const card = await screen.findByRole("link", { name: /support_resistance/ });
   assert.equal(card.getAttribute("href"), "/support_resistance");
+});
+
+test("matches strategy routes, reports unknown routes, and supports browser back navigation", async () => {
+  const user = userEvent.setup();
+  setUrl("/");
+  renderApp();
+  await user.click(await screen.findByRole("link", { name: /support_resistance/ }));
+  await screen.findByTestId("market-chart");
+  assert.equal(window.location.pathname, "/support_resistance");
+
+  window.history.back();
+  await screen.findByRole("heading", { name: "Strategies" });
+  assert.equal(window.location.pathname, "/");
+});
+
+test("renders not-found pages for an unknown strategy and a nested unknown path", async () => {
+  setUrl("/missing_strategy");
+  const strategyRoute = renderApp();
+  assert.match((await screen.findByRole("heading", { name: "Strategy not found" })).textContent, /Strategy not found/);
+  assert.match(screen.getByText(/No strategy named/).textContent, /missing_strategy/);
+
+  strategyRoute.unmount();
+  setUrl("/unknown/nested");
+  renderApp();
+  await screen.findByRole("heading", { name: "Strategy not found" });
+  assert.match(screen.getByText(/No strategy named/).textContent, /unknown\/nested/);
 });
 
 test("uses chart and results navigation with strategy topbar controls", async () => {
   const user = userEvent.setup();
   setUrl("/support_resistance");
-  render(<App />);
+  renderApp();
   await screen.findByTestId("market-chart");
   assert.equal(screen.getByTestId("market-chart").textContent, "Chart active EURUSDm strategies/support_resistance/EURUSDm_df.csv");
   assert.equal(screen.queryByRole("tab"), null);
@@ -101,10 +129,29 @@ test("uses chart and results navigation with strategy topbar controls", async ()
   assert.equal(window.location.hash, "#chart");
 });
 
+test("restores the active workspace tab when browser back and forward changes the hash", async () => {
+  const user = userEvent.setup();
+  setUrl("/support_resistance#chart");
+  renderApp();
+  await screen.findByTestId("market-chart");
+
+  await user.click(screen.getByRole("button", { name: "View Backtest Results" }));
+  await screen.findByTestId("backtest-results");
+  assert.equal(window.location.hash, "#results");
+
+  window.history.back();
+  await waitFor(() => assert.match(screen.getByTestId("market-chart").textContent, /Chart active/));
+  assert.equal(window.location.hash, "#chart");
+
+  window.history.forward();
+  await waitFor(() => assert.match(screen.getByTestId("backtest-results").textContent, /Results active/));
+  assert.equal(window.location.hash, "#results");
+});
+
 test("keeps the chart toolbar symbol selector connected to workspace state", async () => {
   const user = userEvent.setup();
   setUrl("/support_resistance");
-  render(<App />);
+  renderApp();
   await screen.findByTestId("market-chart");
   assert.equal(screen.getByTestId("chart-symbols").textContent, "EURUSDm,GBPUSDm");
 
@@ -117,7 +164,7 @@ test("keeps the chart toolbar symbol selector connected to workspace state", asy
 
 test("centers powered-by branding in the app header", async () => {
   setUrl("/");
-  render(<App />);
+  renderApp();
   const header = await screen.findByRole("banner");
   assert.match(header.querySelector("h1").className, /text-center/);
   assert.match(header.firstElementChild.className, /grid-cols-\[1fr_auto_1fr\]/);
@@ -130,7 +177,7 @@ test("keeps the platform menu available and disables options without URLs", asyn
     ? response(JSON.stringify([{ ...MANIFEST[0], botUrls: { mac: MANIFEST[0].botUrls.mac } }]))
     : response(JSON.stringify(CONFIG))));
   setUrl("/support_resistance");
-  render(<App />);
+  renderApp();
   await screen.findByTestId("market-chart");
   await user.click(screen.getByRole("button", { name: "Download bot" }));
   const windowsOption = await screen.findByRole("menuitem", { name: "Windows" });
@@ -146,7 +193,7 @@ test("opens the platform menu with both options disabled when no URLs are availa
     ? response(JSON.stringify([{ ...MANIFEST[0], botUrls: undefined }]))
     : response(JSON.stringify(CONFIG))));
   setUrl("/support_resistance");
-  render(<App />);
+  renderApp();
   await screen.findByTestId("market-chart");
   const trigger = screen.getByRole("button", { name: "Download bot" });
   assert.equal(trigger.disabled, false);
@@ -159,7 +206,7 @@ test("reports malformed strategy configuration", async () => {
   vi.stubGlobal("fetch", vi.fn(async (url) => String(url).startsWith("strategies/strategies.json")
     ? response(JSON.stringify(MANIFEST)) : response('{ nope')));
   setUrl("/support_resistance");
-  render(<App />);
+  renderApp();
   const alert = await screen.findByRole("alert");
   assert.match(alert.textContent, /config.json is not valid JSON/);
 });

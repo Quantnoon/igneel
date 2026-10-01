@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router";
 
 import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { AppHeader } from "./AppShell.jsx";
@@ -10,13 +11,15 @@ import { useResourceJson } from "../shared/hooks/use-resource-json.js";
 
 const VALID_TABS = new Set(["chart", "results"]);
 
-function tabFromHash() {
-  const hash = window.location.hash.slice(1);
+function tabFromHash(hashValue) {
+  const hash = hashValue.slice(1);
   return VALID_TABS.has(hash) ? hash : "chart";
 }
 
 export function StrategyWorkspace({ strategy }) {
-  const [activeTab, setActiveTab] = useState(tabFromHash);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const activeTab = tabFromHash(location.hash);
   const [selectedSymbol, setSelectedSymbol] = useState("");
   const { data: config, error: configError, loading: configLoading } = useResourceJson(
     strategy.resources.config,
@@ -34,23 +37,14 @@ export function StrategyWorkspace({ strategy }) {
   const dfPath = symbolPaths.get(selectedSymbol) ?? "";
 
   useEffect(() => {
-    const handleLocationChange = () => setActiveTab(tabFromHash());
-    window.addEventListener("hashchange", handleLocationChange);
-    window.addEventListener("popstate", handleLocationChange);
-    return () => {
-      window.removeEventListener("hashchange", handleLocationChange);
-      window.removeEventListener("popstate", handleLocationChange);
-    };
-  }, []);
-
-  useEffect(() => {
     if (!config?.symbols.length) return;
     if (!config.symbols.includes(selectedSymbol)) setSelectedSymbol(config.symbols[0]);
   }, [config, selectedSymbol]);
 
   function selectTab(tab) {
-    setActiveTab(tab);
-    if (window.location.hash !== `#${tab}`) window.history.pushState(null, "", `#${tab}`);
+    if (location.hash !== `#${tab}`) {
+      navigate({ pathname: location.pathname, search: location.search, hash: `#${tab}` });
+    }
   }
 
   return (

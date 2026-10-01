@@ -1,5 +1,6 @@
+import { Route, Routes, useLocation, useParams } from "react-router";
+
 import { AppShell } from "./AppShell.jsx";
-import { usePathname } from "./router.jsx";
 import { StrategyWorkspace } from "./StrategyWorkspace.jsx";
 import { StrategyListPage } from "../features/strategies/StrategyListPage.jsx";
 import { StrategyConfigErrorPage, StrategyNotFoundPage } from "../features/strategies/StrategyStatusPages.jsx";
@@ -7,32 +8,8 @@ import { useStrategies } from "../features/strategies/use-strategies.js";
 import { activeEnvironment, findStrategy } from "../features/strategies/lib/manifest.js";
 import { Alert } from "../shared/components/Alert.jsx";
 
-function strategyNameFromPathname(pathname) {
-  const trimmed = pathname.length > 1 ? pathname.replace(/\/+$/, "") : pathname;
-  if (trimmed === "/") return null;
-  const segment = trimmed.slice(1);
-  if (segment.includes("/")) return undefined;
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return undefined;
-  }
-}
-
-export function App() {
-  const pathname = usePathname();
-  const env = activeEnvironment(import.meta.env.DEV);
-  const { strategies, error, loading } = useStrategies(env);
-  const strategyName = strategyNameFromPathname(pathname);
-
-  if (strategyName === null) {
-    return (
-      <AppShell>
-        <StrategyListPage strategies={strategies} error={error} loading={loading} env={env} />
-      </AppShell>
-    );
-  }
-
+function StrategyRoute({ strategies, error, loading, env }) {
+  const { strategyName } = useParams();
   const strategy = strategies ? findStrategy(strategies, strategyName) : null;
 
   if (!loading && !error && !strategy) {
@@ -43,7 +20,7 @@ export function App() {
     );
   }
 
-  if (strategy && strategy.missingResources.length > 0) {
+  if (strategy?.missingResources.length > 0) {
     return (
       <AppShell>
         <StrategyConfigErrorPage strategy={strategy} env={env} />
@@ -51,9 +28,7 @@ export function App() {
     );
   }
 
-  if (strategy) {
-    return <StrategyWorkspace key={strategy.name} strategy={strategy} />;
-  }
+  if (strategy) return <StrategyWorkspace key={strategy.name} strategy={strategy} />;
 
   return (
     <AppShell>
@@ -65,5 +40,34 @@ export function App() {
         )}
       </div>
     </AppShell>
+  );
+}
+
+function UnknownPathRoute() {
+  const { pathname } = useLocation();
+  return (
+    <AppShell>
+      <StrategyNotFoundPage name={pathname.replace(/^\/+|\/+$/g, "")} />
+    </AppShell>
+  );
+}
+
+export function App() {
+  const env = activeEnvironment(import.meta.env.DEV);
+  const { strategies, error, loading } = useStrategies(env);
+
+  return (
+    <Routes>
+      <Route
+        path="/"
+        element={(
+          <AppShell>
+            <StrategyListPage strategies={strategies} error={error} loading={loading} env={env} />
+          </AppShell>
+        )}
+      />
+      <Route path="/:strategyName" element={<StrategyRoute strategies={strategies} error={error} loading={loading} env={env} />} />
+      <Route path="*" element={<UnknownPathRoute />} />
+    </Routes>
   );
 }

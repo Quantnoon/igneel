@@ -6,7 +6,9 @@ import { BarChart3 } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert } from "../../shared/components/Alert.jsx";
 import { fetchText } from "../../shared/api/fetch-resource.js";
+import { loadInitialCsvChunk, loadOlderCsvChunk } from "../../shared/api/fetch-csv-chunks.js";
 import { availableMarketTimeframes, convertMarketData } from "../../shared/lib/market-data.js";
+import { prependCsvChunk } from "../../shared/lib/csv-records.js";
 import { flattenResults } from "../backtest-results/lib/backtest-results-data.js";
 import { buildBacktestTradesDrawing, backtestTradesRenderer } from "./lib/backtest-trade-plots.js";
 import { buildConsolidationHotspotsDrawing, CONSOLIDATION_HOTSPOT_COLOR, consolidationHotspotsRenderer } from "./lib/consolidation-hotspots.js";
@@ -16,6 +18,7 @@ import { priceLevelColumns, visiblePriceRange } from "./lib/visible-price-range.
 import { useMediaQuery } from "../../shared/hooks/use-media-query.js";
 
 const DEFAULT_ZOOM_START_PERCENT = 75;
+const CANDLES_PER_CHUNK = 1000;
 
 export const qfChartOptions = (config) => ({
   title: config.symbol,
@@ -89,11 +92,35 @@ export function applyVisiblePriceScale(chart, records, indicators) {
   return range;
 }
 
+function visibleCategoryRange(chart, records) {
+  if (!records.length) return null;
+  const option = chart.getChart().getOption();
+  const zoom = option.dataZoom?.find((entry) => entry.type === "inside" || entry.type === "slider");
+  const categories = option.xAxis?.[0]?.data;
+  if (!zoom || !Array.isArray(categories) || categories.length === 0) return null;
+  const start = Math.max(0, Math.min(categories.length - 1, Math.floor((zoom.start ?? 0) / 100 * categories.length)));
+  const end = Math.max(start, Math.min(categories.length - 1, Math.ceil((zoom.end ?? 100) / 100 * categories.length) - 1));
+  return { start: categories[start], end: categories[end] };
+}
+
+function isNearLoadedLeftEdge(chart, candleCount) {
+  const option = chart.getChart().getOption();
+  const zoom = option.dataZoom?.find((entry) => entry.type === "inside" || entry.type === "slider");
+  const categories = option.xAxis?.[0]?.data;
+  if (!zoom || !Array.isArray(categories) || categories.length === 0) return false;
+  const startIndex = Math.floor((zoom.start ?? 0) / 100 * categories.length);
+  return startIndex <= Math.min(CANDLES_PER_CHUNK * 0.1, candleCount * 0.1);
+}
+
 export function MarketChartPage({ active, config, dfPath, resultPath, symbol, symbols = [], onSymbolChange, onViewBacktestResults }) {
   const containerRef = useRef(null);
   const chartRef = useRef(null);
   const chartKeyRef = useRef(null);
   const observerRef = useRef(null);
+  const loadedChartRecordsRef = useRef(null);
+  const chartContentRef = useRef({ indicators: [], drawingIds: [], colorHandler: null });
+  const pagingRef = useRef({ key: "", chunks: null, nextChunkIndex: null, loading: false, exhausted: false, controller: null });
+  const pagingKeyRef = useRef("");
   const [state, setState] = useState({ data: null, error: "", loading: false });
   const [timeframe, setTimeframe] = useState(config.entryTf);
   const [indicatorItems, setIndicatorItems] = useState([]);
@@ -123,14 +150,24 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
     let mounted = true;
     const controller = new AbortController();
     setState({ data: null, error: "", loading: true });
-    Promise.all([fetchText(dfPath, controller.signal), fetchText(resultPath, controller.signal)])
-      .then(([csvText, resultText]) => {
+    Promise.all([loadInitialCsvChunk(dfPath, controller.signal), fetchText(resultPath, controller.signal)])
+      .then(([csv, resultText]) => {
         const trades = flattenResults(JSON.parse(resultText)).find((result) => result.symbol === symbol)?.trades ?? [];
-        if (mounted) setState({
-          data: { config, csvText, availableTimeframes: availableMarketTimeframes(csvText), trades, dfPath },
-          error: "",
-          loading: false,
-        });
+        if (mounted) {
+          pagingRef.current = {
+            key: `${dfPath}:${timeframe}`,
+            chunks: csv.chunks,
+            nextChunkIndex: csv.nextChunkIndex,
+            loading: false,
+            exhausted: !csv.chunks || csv.nextChunkIndex >= csv.chunks.length,
+            controller: null,
+          };
+          setState({
+            data: { config, csvText: csv.csvText, chunks: csv.chunks, nextChunkIndex: csv.nextChunkIndex, availableTimeframes: availableMarketTimeframes(csv.csvText), trades, dfPath },
+            error: "",
+            loading: false,
+          });
+        }
       })
       .catch((error) => {
         if (mounted && error.name !== "AbortError") {
@@ -138,7 +175,21 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
         }
       });
     return () => { mounted = false; controller.abort(); };
-  }, [active, config, dfPath, resultPath, symbol, state.data]);
+  }, [active, config, dfPath, resultPath, symbol, state.data?.dfPath, timeframe]);
+
+  useEffect(() => {
+    const key = `${dfPath}:${timeframe}`;
+    pagingKeyRef.current = key;
+    if (pagingRef.current.loading && pagingRef.current.key !== key) {
+      pagingRef.current.controller?.abort();
+      pagingRef.current.loading = false;
+    }
+    return () => {
+      if (pagingRef.current.key !== key) return;
+      pagingRef.current.controller?.abort();
+      pagingRef.current.loading = false;
+    };
+  }, [dfPath, timeframe]);
 
   useEffect(() => {
     const options = state.data?.availableTimeframes ?? [];
@@ -150,39 +201,65 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
   useEffect(() => {
     if (!active || !state.data || !chartData?.records || !containerRef.current) return;
 
-    const chartKey = `${timeframe}:${isMobile}`;
+    const chartKey = `${dfPath}:${symbol}:${timeframe}:${isMobile}`;
     if (chartRef.current && chartKeyRef.current !== chartKey) {
       observerRef.current?.disconnect();
       observerRef.current = null;
+      if (chartContentRef.current.colorHandler) chartRef.current.events.off("chart:updated", chartContentRef.current.colorHandler);
       chartRef.current.destroy();
       chartRef.current = null;
+      loadedChartRecordsRef.current = null;
+      chartContentRef.current = { indicators: [], drawingIds: [], colorHandler: null };
     }
     if (chartRef.current) return;
 
     const chart = new QFChart(containerRef.current, qfChartOptions({ ...state.data.config, symbol }));
     chartRef.current = chart;
     chartKeyRef.current = chartKey;
-    chart.setMarketData(chartData.records);
-    const items = buildIndicatorItems(chartData.records, state.data.config, timeframe);
-    setIndicatorItems(items);
-    for (const item of items) {
-      if (indicatorVisibility[item.visibilityKey] === false) continue;
-      if (item.kind === "indicator") {
-        chart.addIndicator(item.built.id, item.built.plots, chartAddOptions(item.built.addOptions));
-      }
-    }
-    const patches = indicatorSeriesColorPatches(items.filter((item) => item.kind === "indicator").map((item) => item.built));
-    const syncColors = () => applyIndicatorSeriesColors(chart, patches);
-    syncColors();
-    chart.events.on("chart:updated", syncColors);
     chart.registerDrawingRenderer(backtestTradesRenderer);
     chart.registerDrawingRenderer(sessionBoundariesRenderer);
     chart.registerDrawingRenderer(consolidationHotspotsRenderer);
-    const tradesDrawing = buildBacktestTradesDrawing(chartData.records, state.data.trades);
-    const sessionBoundariesDrawing = buildSessionBoundariesDrawing(chartData.records);
-    // QFChart batches drawings into one ECharts custom series whose dimensions are
-    // sized from the first drawing's row, so the drawing with the most points must
-    // be added first or its trailing markers are culled by the data zoom window.
+    observerRef.current = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => chart.resize());
+    observerRef.current?.observe(containerRef.current);
+  }, [active, chartData, dfPath, isMobile, state.data, timeframe, symbol]);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    const records = chartData?.records;
+    if (!chart || !state.data || !records) return;
+
+    const previousRecords = loadedChartRecordsRef.current;
+    const preserveRange = previousRecords && records.length > previousRecords.length
+      ? visibleCategoryRange(chart, previousRecords)
+      : null;
+    chart.setMarketData(records);
+    loadedChartRecordsRef.current = records;
+    if (preserveRange) {
+      chart.getChart().dispatchAction?.({ type: "dataZoom", startValue: preserveRange.start, endValue: preserveRange.end });
+    }
+
+    for (const item of chartContentRef.current.indicators) {
+      if (item.kind === "indicator") chart.removeIndicator(item.id);
+    }
+    for (const drawingId of chartContentRef.current.drawingIds) chart.removeDrawing(drawingId);
+
+    const items = buildIndicatorItems(records, state.data.config, timeframe);
+    setIndicatorItems(items);
+    for (const item of items) {
+      if (indicatorVisibility[item.visibilityKey] === false || item.kind !== "indicator") continue;
+      chart.addIndicator(item.built.id, item.built.plots, chartAddOptions(item.built.addOptions));
+    }
+    const patches = indicatorSeriesColorPatches(items.filter((item) => item.kind === "indicator").map((item) => item.built));
+    if (chartContentRef.current.colorHandler) chart.events.off("chart:updated", chartContentRef.current.colorHandler);
+    const syncColors = () => applyIndicatorSeriesColors(chart, patches);
+    chartContentRef.current.colorHandler = syncColors;
+    syncColors();
+    chart.events.on("chart:updated", syncColors);
+
+    const tradesDrawing = buildBacktestTradesDrawing(records, state.data.trades);
+    const sessionBoundariesDrawing = buildSessionBoundariesDrawing(records);
+    // QFChart batches drawings into one custom series; add the largest first so
+    // trailing markers remain inside the custom-series dimensions.
     const visibleDrawings = items
       .filter((item) => item.kind === "drawing" && indicatorVisibility[item.visibilityKey] !== false)
       .map((item) => item.drawing);
@@ -190,12 +267,9 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
       .filter(Boolean)
       .sort((left, right) => right.points.length - left.points.length);
     for (const drawing of drawings) chart.addDrawing(drawing);
-
-    observerRef.current = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => chart.resize());
-    observerRef.current?.observe(containerRef.current);
-
-    return () => chart.events.off("chart:updated", syncColors);
-  }, [active, chartData, isMobile, sessionBoundariesVisible, state.data, timeframe, symbol]);
+    chartContentRef.current.indicators = items;
+    chartContentRef.current.drawingIds = drawings.map(({ id }) => id);
+  }, [chartData, state.data]);
 
   useEffect(() => {
     const chart = chartRef.current;
@@ -204,17 +278,66 @@ export function MarketChartPage({ active, config, dfPath, resultPath, symbol, sy
       .filter((item) => indicatorVisibility[item.visibilityKey] !== false)
       .map((item) => item.entry);
     const updatePriceScale = () => applyVisiblePriceScale(chart, chartData.records, visibleIndicators);
+    const loadOlderWhenNeeded = () => {
+      const paging = pagingRef.current;
+      const key = `${dfPath}:${timeframe}`;
+      if (!state.data.chunks || paging.exhausted || paging.loading || pagingKeyRef.current !== key) return;
+      if (!isNearLoadedLeftEdge(chart, chartData.records.length)) return;
+      const chunkIndex = paging.nextChunkIndex;
+      if (chunkIndex === null || chunkIndex >= state.data.chunks.length) {
+        paging.exhausted = true;
+        return;
+      }
+      const controller = new AbortController();
+      paging.key = key;
+      paging.loading = true;
+      paging.controller = controller;
+      loadOlderCsvChunk(dfPath, state.data.chunks, chunkIndex, controller.signal).then((olderCsv) => {
+        if (controller.signal.aborted || pagingKeyRef.current !== key) return;
+        if (!olderCsv) {
+          paging.exhausted = true;
+          return;
+        }
+        const olderRows = olderCsv.trim() ? olderCsv : "";
+        if (!olderRows) {
+          paging.exhausted = true;
+          return;
+        }
+        const mergedCsv = prependCsvChunk(olderRows, state.data.csvText);
+        paging.nextChunkIndex = chunkIndex + 1;
+        paging.exhausted = paging.nextChunkIndex >= state.data.chunks.length;
+        setState((previous) => previous.data?.dfPath === dfPath
+          ? { ...previous, data: { ...previous.data, csvText: mergedCsv, nextChunkIndex: paging.nextChunkIndex }, error: "" }
+          : previous);
+      }).catch((error) => {
+        if (!controller.signal.aborted && pagingKeyRef.current === key) {
+          setState((previous) => ({ ...previous, error: `Unable to load older candles: ${error.message ?? String(error)}` }));
+        }
+      }).finally(() => {
+        if (paging.controller === controller) {
+          paging.loading = false;
+          paging.controller = null;
+        }
+      });
+    };
+    const handleDataZoom = () => {
+      updatePriceScale();
+      loadOlderWhenNeeded();
+    };
     updatePriceScale();
-    chart.events.on("chart:dataZoom", updatePriceScale);
-    return () => chart.events.off("chart:dataZoom", updatePriceScale);
-  }, [chartData, indicatorItems, indicatorVisibility, isMobile, state.data, timeframe]);
+    chart.events.on("chart:dataZoom", handleDataZoom);
+    return () => chart.events.off("chart:dataZoom", handleDataZoom);
+  }, [chartData, dfPath, indicatorItems, indicatorVisibility, isMobile, state.data, timeframe]);
 
   useEffect(() => () => {
     observerRef.current?.disconnect();
     observerRef.current = null;
+    if (chartContentRef.current.colorHandler) chartRef.current?.events.off("chart:updated", chartContentRef.current.colorHandler);
     chartRef.current?.destroy();
     chartRef.current = null;
     chartKeyRef.current = null;
+    loadedChartRecordsRef.current = null;
+    pagingRef.current.controller?.abort();
   }, []);
 
   useEffect(() => {
