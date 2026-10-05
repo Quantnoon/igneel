@@ -87,7 +87,7 @@ _deployments = {
         "symbols": ["EURUSD", "GBPUSD", "USDJPY"],
         "date_range": "1W",
         "timeframes": ["H4", "M15"],
-        "daily_dd": 0.15,
+        "daily_dd": 0.2,
         "maximum_dd": 0.65,
         "signals": [
             {
@@ -100,7 +100,7 @@ _deployments = {
                 "allowed_symbols": ["EURUSD", "GBPUSD", "USDJPY"],
                 "trading_sessions": [],
                 "allow_many_trades": False,
-                "use_trailing_sl": True,
+                "use_trailing_sl": False,
                 "entry_tf": "M15",
                 "is_weekend_trading": False,
             }
@@ -128,6 +128,10 @@ _deployments = {
                     "regime_lookback": 5
                 }
             },
+            {
+                "indicator": "ATR",
+                "timeframe": "M15",
+            }
         ]
     },
     "consolidation_bot": {
@@ -151,7 +155,7 @@ _deployments = {
                 "magic": 123456,
                 "sl_type": "atr",
                 "atr_multiplier": 2.0,
-                "rrr": 3,
+                "rrr": 2.5,
                 "signal": consolidation_entry,
                 "allowed_symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD"],
                 "trading_sessions": [],
@@ -179,4 +183,4 @@ _deployments = {
     }
 }
 
-active_config = _deployments["sr_bot"]
+active_config = _deployments["consolidation_bot"]

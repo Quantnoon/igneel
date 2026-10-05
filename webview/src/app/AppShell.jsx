@@ -1,8 +1,12 @@
 import { ArrowLeft, ChevronDown, Download } from "lucide-react";
+import { useState } from "react";
+import { Dialog } from "@base-ui/react/dialog";
 import { Menu } from "@base-ui/react/menu";
 import { useLocation, useNavigate } from "react-router";
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 const menuItemClassName = "flex min-h-24 flex-col items-center justify-center gap-2 rounded-md px-3 py-3 text-sm outline-none transition-colors hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground data-disabled:pointer-events-none data-disabled:opacity-50";
 
@@ -22,9 +26,108 @@ function AppleIcon() {
   );
 }
 
+function subscriptionEndpoint() {
+  const baseUrl = import.meta.env.PUBLIC_API_URL?.trim();
+  if (!baseUrl) throw new Error("PUBLIC_API_URL is not configured.");
+  return `${baseUrl.replace(/\/+$/, "")}/api/strategy-subscriptions`;
+}
+
+function startDownload(url) {
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = "";
+  document.body.append(link);
+  link.click();
+  link.remove();
+}
+
+function DownloadSubscriptionDialog({ download, onClose, strategyName }) {
+  const [email, setEmail] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+
+  function resetAndClose() {
+    setEmail("");
+    setError("");
+    setSubmitting(false);
+    onClose();
+  }
+
+  async function submit(event) {
+    event.preventDefault();
+    if (!download || submitting) return;
+
+    setSubmitting(true);
+    setError("");
+    let subscriptionFailed = false;
+    try {
+      const response = await fetch(subscriptionEndpoint(), {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-webhook-secret": import.meta.env.PUBLIC_WEBHOOK_SECRET ?? "",
+        },
+        body: JSON.stringify({ email, strategy_name: strategyName }),
+      });
+      if (!response.ok) subscriptionFailed = true;
+    } catch {
+      subscriptionFailed = true;
+    }
+
+    startDownload(download.url);
+    setSubmitting(false);
+    if (subscriptionFailed) {
+      setError("We could not record your subscription, but your download has started.");
+    } else {
+      resetAndClose();
+    }
+  }
+
+  return (
+    <Dialog.Root open={Boolean(download)} onOpenChange={(open) => { if (!open) resetAndClose(); }}>
+      <Dialog.Portal>
+        <Dialog.Backdrop className="fixed inset-0 z-50 bg-black/45 backdrop-blur-sm" />
+        <Dialog.Viewport className="fixed inset-0 z-50 flex items-center justify-center p-4">
+          <Dialog.Popup className="w-full max-w-md rounded-xl border border-border bg-popover p-6 text-popover-foreground shadow-xl outline-none">
+            <Dialog.Title className="text-lg font-semibold">Download {download?.platform} bot</Dialog.Title>
+            <Dialog.Description className="mt-2 text-sm text-muted-foreground">
+              Enter your email to subscribe to updates for {strategyName}, then your download will begin.
+            </Dialog.Description>
+            <form className="mt-5 space-y-4" onSubmit={submit}>
+              <div className="space-y-2">
+                <Label htmlFor="subscription-email">Email address</Label>
+                <Input
+                  id="subscription-email"
+                  name="email"
+                  type="email"
+                  autoComplete="email"
+                  required
+                  value={email}
+                  onChange={(event) => setEmail(event.target.value)}
+                  disabled={submitting}
+                />
+              </div>
+              {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
+              <div className="flex justify-end gap-3">
+                <button type="button" onClick={resetAndClose} disabled={submitting} className="inline-flex h-9 items-center rounded-lg px-3 text-sm font-medium hover:bg-muted disabled:pointer-events-none disabled:opacity-50">
+                  Cancel
+                </button>
+                <button type="submit" disabled={submitting} className="inline-flex h-9 items-center rounded-lg bg-[#0f8eff] px-3 text-sm font-semibold text-white hover:bg-[#0878dc] disabled:pointer-events-none disabled:opacity-50">
+                  {submitting ? "Subscribing…" : "Subscribe & download"}
+                </button>
+              </div>
+            </form>
+          </Dialog.Popup>
+        </Dialog.Viewport>
+      </Dialog.Portal>
+    </Dialog.Root>
+  );
+}
+
 export function AppHeader({ showBack = false, botUrls = {}, strategies = [], currentStrategy = "" }) {
   const location = useLocation();
   const navigate = useNavigate();
+  const [download, setDownload] = useState(null);
 
   function selectStrategy(nextStrategy) {
     if (!nextStrategy || nextStrategy === currentStrategy) return;
@@ -33,6 +136,10 @@ export function AppHeader({ showBack = false, botUrls = {}, strategies = [], cur
       search: location.search,
       hash: location.hash,
     });
+  }
+
+  function selectDownload(platform, url) {
+    setDownload({ platform, url });
   }
 
   return (
@@ -88,10 +195,10 @@ export function AppHeader({ showBack = false, botUrls = {}, strategies = [], cur
                 <Menu.Positioner side="bottom" align="end" sideOffset={6} className="z-50 outline-none">
                   <Menu.Popup className="grid w-64 grid-cols-2 gap-1 rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg outline-none">
                     {botUrls.windows ? (
-                      <Menu.LinkItem href={botUrls.windows} download className={menuItemClassName}>
+                      <Menu.Item onClick={() => selectDownload("Windows", botUrls.windows)} className={menuItemClassName}>
                         <WindowsIcon />
                         <span>Windows</span>
-                      </Menu.LinkItem>
+                      </Menu.Item>
                     ) : (
                       <Menu.Item disabled className={menuItemClassName}>
                         <WindowsIcon />
@@ -99,10 +206,10 @@ export function AppHeader({ showBack = false, botUrls = {}, strategies = [], cur
                       </Menu.Item>
                     )}
                     {botUrls.mac ? (
-                      <Menu.LinkItem href={botUrls.mac} download className={menuItemClassName}>
+                      <Menu.Item onClick={() => selectDownload("MacBook", botUrls.mac)} className={menuItemClassName}>
                         <AppleIcon />
                         <span>MacBook</span>
-                      </Menu.LinkItem>
+                      </Menu.Item>
                     ) : (
                       <Menu.Item disabled className={menuItemClassName}>
                         <AppleIcon />
@@ -116,6 +223,7 @@ export function AppHeader({ showBack = false, botUrls = {}, strategies = [], cur
           )}
         </div>
       </div>
+      <DownloadSubscriptionDialog download={download} onClose={() => setDownload(null)} strategyName={currentStrategy} />
     </header>
   );
 }

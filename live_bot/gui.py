@@ -14,6 +14,13 @@ if __package__ in {None, ""}:
     sys.path.insert(0, str(project_root))
 
 
+def _asset_path(filename):
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        return Path(bundle_dir) / filename
+    return Path(__file__).resolve().parent / filename
+
+
 class _QueueWriter:
     def __init__(self, output_queue):
         self.output_queue = output_queue
@@ -27,6 +34,42 @@ class _QueueWriter:
         pass
 
 
+class StartupSplash:
+    def __init__(self, root):
+        self.window = tk.Toplevel(root)
+        self.image = tk.PhotoImage(file=str(_asset_path("igneel-splash.png")))
+        scale = max(
+            1,
+            (self.image.width() + 899) // 900,
+            (self.image.height() + 599) // 600,
+        )
+        if scale > 1:
+            self.image = self.image.subsample(scale, scale)
+        self.window.overrideredirect(True)
+        self.window.attributes("-topmost", True)
+        self.window.protocol("WM_DELETE_WINDOW", lambda: None)
+        tk.Label(self.window, image=self.image, borderwidth=0).pack()
+        self.window.update_idletasks()
+        width = self.image.width()
+        height = self.image.height()
+        x = (self.window.winfo_screenwidth() - width) // 2
+        y = (self.window.winfo_screenheight() - height) // 2
+        self.window.geometry("%dx%d+%d+%d" % (width, height, x, y))
+        self.window.lift()
+
+    def close(self):
+        if self.window.winfo_exists():
+            self.window.destroy()
+
+
+def _close_native_splash():
+    try:
+        import pyi_splash
+    except ImportError:
+        return
+    pyi_splash.close()
+
+
 class BotWindow:
     def __init__(self, root):
         self.root = root
@@ -34,6 +77,8 @@ class BotWindow:
         self.stop_event = threading.Event()
         self.close_when_stopped = False
         self.worker_error = None
+        self.startup_splash = StartupSplash(root)
+        self.native_splash_closed = False
         self.original_stdout = sys.stdout
         self.original_stderr = sys.stderr
         self.root.title("Igneel Trading Bot")
@@ -62,12 +107,7 @@ class BotWindow:
         self.root.after(100, self._drain_output)
 
     def _set_icon(self):
-        bundle_dir = getattr(sys, "_MEIPASS", None)
-        icon_path = (
-            Path(bundle_dir) / "igneel.ico"
-            if bundle_dir
-            else Path(__file__).resolve().parent / "igneel.ico"
-        )
+        icon_path = _asset_path("igneel.ico")
         if icon_path.is_file():
             self.root.iconbitmap(default=str(icon_path))
 
@@ -91,6 +131,16 @@ class BotWindow:
         self.log.see(tk.END)
         self.log.configure(state=tk.DISABLED)
 
+    def _show_main_window(self):
+        if not self.native_splash_closed:
+            _close_native_splash()
+            self.native_splash_closed = True
+        if self.startup_splash is not None:
+            self.startup_splash.close()
+            self.startup_splash = None
+        self.root.deiconify()
+        self.root.lift()
+
     def _drain_output(self):
         finished = False
         while True:
@@ -104,6 +154,7 @@ class BotWindow:
                 self._append_output(item)
 
         if finished or not self.worker.is_alive():
+            self._show_main_window()
             self.status.set("Stopped" if self.stop_event.is_set() else "Bot exited")
             sys.stdout = self.original_stdout
             sys.stderr = self.original_stderr
@@ -138,7 +189,9 @@ class BotWindow:
 
 def main():
     root = tk.Tk()
-    BotWindow(root)
+    root.withdraw()
+    window = BotWindow(root)
+    root.after_idle(window._show_main_window)
     root.mainloop()
 
 

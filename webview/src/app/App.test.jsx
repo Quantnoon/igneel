@@ -78,11 +78,13 @@ function activeChartSymbols() { return screen.getAllByTestId("chart-symbols").fi
 async function waitForActiveChart() { await waitFor(() => assert.ok(activeChart())); return activeChart(); }
 
 beforeEach(() => {
+  vi.stubEnv("PUBLIC_API_URL", "https://subscriptions.example");
+  vi.stubEnv("PUBLIC_WEBHOOK_SECRET", "test-webhook-secret");
   vi.stubGlobal("fetch", vi.fn(async (url) => String(url).startsWith("strategies/strategies.json")
     ? response(JSON.stringify(MANIFEST))
     : response(JSON.stringify(CONFIG))));
 });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); setUrl("/"); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.unstubAllEnvs(); setUrl("/"); });
 
 test("lists new strategy identities at their short routes", async () => {
   setUrl("/");
@@ -151,12 +153,15 @@ test("uses chart and results navigation with strategy topbar controls", async ()
   const windowsOption = await screen.findByRole("menuitem", { name: "Windows" });
   const macOption = screen.getByRole("menuitem", { name: "MacBook" });
   assert.match(windowsOption.parentElement.className, /grid-cols-2/);
-  assert.equal(windowsOption.getAttribute("href"), "https://example.com/support-resistance-windows.ex5");
-  assert.equal(macOption.getAttribute("href"), "https://example.com/support-resistance-mac.ex5");
-  assert.ok(windowsOption.hasAttribute("download"));
-  assert.ok(macOption.hasAttribute("download"));
+  assert.equal(windowsOption.hasAttribute("href"), false);
+  assert.equal(macOption.hasAttribute("href"), false);
   assert.ok(windowsOption.querySelector('[data-testid="windows-icon"]'));
   assert.ok(macOption.querySelector('[data-testid="apple-icon"]'));
+  await user.click(windowsOption);
+  assert.ok(await screen.findByRole("dialog", { name: "Download Windows bot" }));
+  assert.ok(screen.getByLabelText("Email address").required);
+  await user.click(screen.getByRole("button", { name: "Cancel" }));
+  assert.equal(screen.queryByRole("dialog"), null);
 
   await user.click(screen.getByRole("button", { name: "Chart select GBPUSDm" }));
   await waitFor(() => assert.equal(activeChart().textContent, "Chart active GBPUSDm strategies/support_resistance/GBPUSDm_df.csv"));
@@ -309,7 +314,57 @@ test("keeps the platform menu available and disables options without URLs", asyn
   const macOption = screen.getByRole("menuitem", { name: "MacBook" });
   assert.equal(windowsOption.getAttribute("aria-disabled"), "true");
   assert.equal(windowsOption.hasAttribute("href"), false);
-  assert.equal(macOption.getAttribute("href"), MANIFEST[0].botUrls.mac);
+  assert.equal(macOption.hasAttribute("href"), false);
+});
+
+test("subscribes with the entered email before downloading the selected bot", async () => {
+  const user = userEvent.setup();
+  const clickedDownloads = [];
+  vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function click() {
+    clickedDownloads.push({ href: this.href, download: this.download });
+  });
+  setUrl("/support_resistance");
+  renderApp();
+  await waitForActiveChart();
+  await user.click(screen.getByRole("button", { name: "Download bot" }));
+  await user.click(await screen.findByRole("menuitem", { name: "MacBook" }));
+  await user.type(screen.getByLabelText("Email address"), "trader@example.com");
+  await user.click(screen.getByRole("button", { name: "Subscribe & download" }));
+
+  await waitFor(() => assert.equal(clickedDownloads.length, 1));
+  const [url, options] = fetch.mock.calls.find(([url]) => String(url).startsWith("https://subscriptions.example/"));
+  assert.equal(url, "https://subscriptions.example/api/strategy-subscriptions");
+  assert.deepEqual(options, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-webhook-secret": "test-webhook-secret",
+    },
+    body: JSON.stringify({ email: "trader@example.com", strategy_name: "support_resistance" }),
+  });
+  assert.deepEqual(clickedDownloads, [{ href: MANIFEST[0].botUrls.mac, download: "" }]);
+  assert.equal(screen.queryByRole("dialog"), null);
+});
+
+test("starts the download and keeps a subscription failure visible", async () => {
+  const user = userEvent.setup();
+  const downloadClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+  vi.stubGlobal("fetch", vi.fn(async (url) => {
+    if (String(url).startsWith("strategies/strategies.json")) return response(JSON.stringify(MANIFEST));
+    if (String(url).startsWith("https://subscriptions.example/")) return { ok: false, status: 500 };
+    return response(JSON.stringify(CONFIG));
+  }));
+  setUrl("/support_resistance");
+  renderApp();
+  await waitForActiveChart();
+  await user.click(screen.getByRole("button", { name: "Download bot" }));
+  await user.click(await screen.findByRole("menuitem", { name: "Windows" }));
+  await user.type(screen.getByLabelText("Email address"), "trader@example.com");
+  await user.click(screen.getByRole("button", { name: "Subscribe & download" }));
+
+  assert.equal((await screen.findByRole("alert")).textContent, "We could not record your subscription, but your download has started.");
+  assert.equal(downloadClick.mock.calls.length, 1);
+  assert.ok(screen.getByRole("dialog", { name: "Download Windows bot" }));
 });
 
 test("opens the platform menu with both options disabled when no URLs are available", async () => {

@@ -34,70 +34,74 @@ _indicators = [
             "regime_lookback": 5
         }
     },
+    {
+        "indicator": "ATR",
+        "timeframe": "M15",
+    }
 ]
 
 strategies = [
-    {
-        "symbols": ["EURUSD", "GBPUSD", "USDCAD", "USDJPY"],
-        "name": "support_resistance",
-        "indicators": _indicators,
-        "timeframes": ["H4", "M15"],
-        "date_range": "8M",
-        "strategy": ("support_resistance", sr_entry, sr_exit),
-        "config": {
-            "default_config": {
-                "sl_type": "custom",
-                "atr_multiplier": 4,
-                "rrr": 3,
-                "entry_tf": "M15",
-                "slippage": 2.5
-            },
-            "risk_config": {
-                "starting_balance":      30,
-                "currency":              "USD",   # or "NGN"
-                "ngn_conversion_rate":   1450,
-                "lot_size":              0.01,
-                "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
-                "daily_dd": 0.05, # in percentage
-                "maximum_dd": 0.7, # in percentage
-                "trading_days": [], # [] = all trading days
-            }
-        }
-    },
     # {
-    #     "symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD"],
-    #     "name": "market_consolidation",
-    #     "indicators": [
-    #         {
-    #             "indicator": "CONSOLIDATION_HOTSPOT",
-    #             "timeframe": "H1"
-    #         },
-    #         {
-    #             "indicator": "COMBINED_TREND",
-    #             "timeframe": "H1"
-    #         }
-    #     ],
-    #     "timeframes": ["H1"],
-    #     "date_range": "1Y",
-    #     "strategy": ("consolidation", consolidation_entry, consolidation_exit),
+    #     "symbols": ["EURUSD", "GBPUSD", "USDCAD", "USDJPY"],
+    #     "name": "support_resistance",
+    #     "indicators": _indicators,
+    #     "timeframes": ["H4", "M15"],
+    #     "date_range": "8M",
+    #     "strategy": ("support_resistance", sr_entry, sr_exit),
     #     "config": {
     #         "default_config": {
-    #             "sl_type": "atr",
-    #             "atr_multiplier": 2,
+    #             "sl_type": "custom",
+    #             "atr_multiplier": 4,
     #             "rrr": 3,
-    #             "entry_tf": "H1",
+    #             "entry_tf": "M15",
     #             "slippage": 2.5
     #         },
     #         "risk_config": {
-    #             "starting_balance":      100,
+    #             "starting_balance":      30,
     #             "currency":              "USD",   # or "NGN"
     #             "ngn_conversion_rate":   1450,
-    #             "lot_size":              0.02,
+    #             "lot_size":              0.01,
     #             "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
     #             "daily_dd": 0.05, # in percentage
     #             "maximum_dd": 0.7, # in percentage
     #             "trading_days": [], # [] = all trading days
     #         }
     #     }
-    # }
+    # },
+    {
+        "symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD"],
+        "name": "market_consolidation",
+        "indicators": [
+            {
+                "indicator": "CONSOLIDATION_HOTSPOT",
+                "timeframe": "H1"
+            },
+            {
+                "indicator": "COMBINED_TREND",
+                "timeframe": "H1"
+            }
+        ],
+        "timeframes": ["H1"],
+        "date_range": "1M",
+        "strategy": ("consolidation", consolidation_entry, consolidation_exit),
+        "config": {
+            "default_config": {
+                "sl_type": "atr",
+                "atr_multiplier": 2,
+                "rrr": 3,
+                "entry_tf": "H1",
+                "slippage": 2.5
+            },
+            "risk_config": {
+                "starting_balance":      10,
+                "currency":              "USD",   # or "NGN"
+                "ngn_conversion_rate":   1450,
+                "lot_size":              0.02,
+                "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
+                "daily_dd": 0.05, # in percentage
+                "maximum_dd": 0.7, # in percentage
+                "trading_days": [], # [] = all trading days
+            }
+        }
+    }
 ]

@@ -23,7 +23,7 @@ set /p "EXE_NAME="<"%NAME_FILE%"
 del /q "%NAME_FILE%" >nul 2>&1
 if not defined EXE_NAME goto :invalid_name
 
-"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --name "%EXE_NAME%" --icon "%LIVE_BOT_DIR%igneel.ico" --add-data "%LIVE_BOT_DIR%igneel.ico;." --hidden-import=talib.stream --paths "%PROJECT_ROOT%" --distpath "%LIVE_BOT_DIR%dist" --workpath "%LIVE_BOT_DIR%build\pyinstaller" --specpath "%LIVE_BOT_DIR%build" "%LIVE_BOT_DIR%gui.py"
+"%PYTHON_EXE%" -m PyInstaller --noconfirm --clean --onefile --windowed --name "%EXE_NAME%" --icon "%LIVE_BOT_DIR%igneel.ico" --splash "%LIVE_BOT_DIR%igneel-splash.png" --splash-center active --add-data "%LIVE_BOT_DIR%igneel.ico;." --add-data "%LIVE_BOT_DIR%igneel-splash.png;." --hidden-import=talib.stream --paths "%PROJECT_ROOT%" --distpath "%LIVE_BOT_DIR%dist" --workpath "%LIVE_BOT_DIR%build\pyinstaller" --specpath "%LIVE_BOT_DIR%build" "%LIVE_BOT_DIR%gui.py"
 if errorlevel 1 goto :build_failed
 
 if not exist "%LIVE_BOT_DIR%dist\%EXE_NAME%.exe" goto :missing_executable

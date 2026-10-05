@@ -20,7 +20,9 @@ def reset_telegram_state(monkeypatch):
     telegram._recent_alerts.clear()
     telegram._delivery_retry_after = 0.0
     telegram._last_delivery_failure_logged = None
-    monkeypatch.setattr(telegram, "_missing_config_warned", False)
+    telegram._notification_db = None
+    telegram._daily_muted_date = ""
+    telegram._maximum_muted = False
 
 
 def _success_response():
@@ -40,7 +42,7 @@ def test_send_message_posts_bot_api_payload(monkeypatch):
     assert telegram.send_message("trade opened") is True
     url, kwargs = calls[0]
     assert url == "https://api.telegram.org/bottoken-value/sendMessage"
-    assert kwargs["json"] == {"chat_id": "chat-123", "text": "trade opened"}
+    assert kwargs["json"] == {"chat_id": "chat-123", "text": "ℹ️ trade opened"}
     assert kwargs["timeout"] == telegram._REQUEST_TIMEOUT_SECONDS
 
 
@@ -57,9 +59,37 @@ def test_send_message_adds_html_parse_mode_when_requested(monkeypatch):
     assert telegram.send_message("<b>report</b>", parse_mode="HTML") is True
     assert calls[0]["json"] == {
         "chat_id": "chat",
-        "text": "<b>report</b>",
+        "text": "ℹ️ <b>report</b>",
         "parse_mode": "HTML",
     }
+
+
+@pytest.mark.parametrize(
+    "notification_type,emoji",
+    [
+        ("report", "📊"),
+        ("trade_opened", "🟢"),
+        ("trade_closed", "🔴"),
+        ("warning", "⚠️"),
+        ("error", "❌"),
+        ("daily_drawdown", "📉"),
+        ("maximum_drawdown", "🛑"),
+    ],
+)
+def test_send_message_prefixes_matching_notification_emoji(
+    monkeypatch, notification_type, emoji
+):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+    calls = []
+    monkeypatch.setattr(
+        telegram.requests,
+        "post",
+        lambda url, **kwargs: calls.append(kwargs["json"]["text"]) or _success_response(),
+    )
+
+    assert telegram.send_message("message", notification_type=notification_type) is True
+    assert calls == [emoji + " message"]
 
 
 def test_send_message_rejects_http_and_bot_api_failures(monkeypatch):
@@ -99,13 +129,69 @@ def test_send_message_handles_network_errors_without_logging_token(
     assert token not in caplog.text
 
 
-def test_missing_configuration_warns_once(monkeypatch, caplog):
+@pytest.mark.parametrize(
+    "token,chat_id",
+    [
+        (None, None),
+        ("token", None),
+        (None, "chat"),
+        ("", "chat"),
+        ("token", ""),
+        ("   ", "chat"),
+        ("token", "   "),
+    ],
+)
+def test_missing_configuration_silently_skips_telegram(
+    monkeypatch, caplog, token, chat_id
+):
+    for name, value in (
+        ("TELEGRAM_BOT_TOKEN", token),
+        ("TELEGRAM_CHAT_ID", chat_id),
+    ):
+        if value is None:
+            monkeypatch.delenv(name, raising=False)
+        else:
+            monkeypatch.setenv(name, value)
+
+    monkeypatch.setattr(
+        telegram.requests,
+        "post",
+        lambda *args, **kwargs: pytest.fail("Telegram request should be skipped"),
+    )
+    db = Database(":memory:")
+    try:
+        with caplog.at_level(logging.DEBUG):
+            assert telegram.initialize_telegram() is False
+            assert telegram.send_message("report") is False
+            assert (
+                telegram.startup_report(
+                    [{"name": "Ranger", "magic": 77}], db=db
+                )
+                is False
+            )
+            assert telegram.daily_log([{"name": "Ranger", "magic": 77}], db) is False
+    finally:
+        db.close()
+
+    assert caplog.text == ""
+
+
+def test_missing_configuration_preserves_local_operational_logging(
+    monkeypatch, caplog
+):
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
-    with caplog.at_level(logging.WARNING):
-        assert telegram.initialize_telegram() is False
-        assert telegram.initialize_telegram() is False
-    assert caplog.text.count("Telegram notifications are disabled") == 1
+    monkeypatch.setattr(
+        telegram.requests,
+        "post",
+        lambda *args, **kwargs: pytest.fail("Telegram request should be skipped"),
+    )
+
+    with caplog.at_level(logging.ERROR):
+        assert telegram.log_error("MetaTrader connection failed") is False
+
+    assert "MetaTrader connection failed" in caplog.text
+    assert "Telegram notifications are disabled" not in caplog.text
 
 
 def test_message_chunks_stay_within_telegram_limit(monkeypatch):
@@ -140,6 +226,8 @@ def test_report_html_escapes_signal_names_and_symbols():
         [signal],
         {77: [{"magic": 77, "symbol": "EUR<USD", "entry": 0, "position_id": 1}]},
         [],
+        1000,
+        900,
     )
 
     assert "&lt;Ranger &amp; Friends&gt;" in report
@@ -147,10 +235,132 @@ def test_report_html_escapes_signal_names_and_symbols():
     assert "<Ranger & Friends>" not in report
 
 
+@pytest.mark.parametrize(
+    "starting,current,expected",
+    [
+        (1000, 900, "📉 <b>Total amount lost:</b> <b>100.00</b>"),
+        (1000, 1000, "📉 <b>Total amount lost:</b> <b>0.00</b>"),
+        (1000, 1125.5, "📈 <b>Total amount gained:</b> <b>125.50</b>"),
+    ],
+)
+def test_report_replaces_realized_pnl_with_account_loss_or_gain(
+    starting, current, expected
+):
+    report = telegram._build_daily_report(
+        datetime(2026, 5, 1).date(),
+        [{"name": "Ranger", "magic": 77}],
+        {77: []},
+        [],
+        starting,
+        current,
+    )
+
+    assert expected in report
+    assert "Realized net" not in report
+
+
+def test_account_balance_snapshot_uses_stored_start_and_live_mt5_balance(monkeypatch):
+    db = Database(":memory:")
+    try:
+        assert db.create_table("account", {"id": 1, "starting_balance": 1000.0})["success"]
+        assert db.add_to_table("account", {"id": 1, "starting_balance": 1000.0})["success"]
+        monkeypatch.setattr(
+            telegram,
+            "mt5",
+            SimpleNamespace(account_info=lambda: SimpleNamespace(balance=875.25)),
+        )
+
+        assert telegram._account_balance_snapshot(db) == ((1000.0, 875.25), None)
+    finally:
+        db.close()
+
+
+def test_daily_drawdown_mutes_all_messages_until_next_lagos_day(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+    current_date = [datetime(2026, 5, 2).date()]
+    monkeypatch.setattr(telegram, "_lagos_date", lambda now=None: current_date[0])
+    calls = []
+    monkeypatch.setattr(
+        telegram.requests,
+        "post",
+        lambda url, **kwargs: calls.append(kwargs["json"]["text"]) or _success_response(),
+    )
+    db = Database(":memory:")
+    try:
+        assert telegram.configure_notification_state(db) is True
+        assert telegram.send_message("limit", notification_type="daily_drawdown") is True
+        assert telegram.send_message("opened", notification_type="trade_opened") is False
+
+        # Reloading the state simulates a bot restart on the same day.
+        assert telegram.configure_notification_state(db) is True
+        assert telegram.send_message("report", notification_type="report") is False
+
+        current_date[0] = datetime(2026, 5, 3).date()
+        assert telegram.send_message("report", notification_type="report") is True
+        assert len(calls) == 2
+    finally:
+        db.close()
+
+
+def test_maximum_drawdown_mute_persists_across_database_reopen(monkeypatch, tmp_path):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+    monkeypatch.setattr(
+        telegram.requests,
+        "post",
+        lambda *args, **kwargs: _success_response(),
+    )
+    db_path = tmp_path / "bot.sqlite3"
+    db = Database(str(db_path))
+    assert telegram.configure_notification_state(db) is True
+    assert telegram.send_message("limit", notification_type="maximum_drawdown") is True
+    db.close()
+
+    telegram._maximum_muted = False
+    telegram._notification_db = None
+    reopened = Database(str(db_path))
+    try:
+        assert telegram.configure_notification_state(reopened) is True
+        assert telegram.send_message("error", notification_type="error") is False
+        assert telegram.send_message("limit", notification_type="maximum_drawdown") is False
+    finally:
+        reopened.close()
+
+
+def test_failed_drawdown_delivery_does_not_activate_mute(monkeypatch):
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "token")
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "chat")
+    responses = iter(
+        (
+            SimpleNamespace(status_code=500, json=lambda: {"ok": False}),
+            _success_response(),
+        )
+    )
+    monkeypatch.setattr(
+        telegram.requests,
+        "post",
+        lambda *args, **kwargs: next(responses),
+    )
+    db = Database(":memory:")
+    try:
+        assert telegram.configure_notification_state(db) is True
+        assert telegram.send_message("limit", notification_type="daily_drawdown") is False
+        assert telegram._daily_muted_date == ""
+        telegram._delivery_retry_after = 0.0
+        assert telegram.send_message("retry", notification_type="info") is True
+    finally:
+        db.close()
+
+
 def test_error_alert_is_rate_limited_and_recovery_clears_it(monkeypatch):
     sent = []
     clock = [100.0]
-    monkeypatch.setattr(telegram, "send_message", lambda text: sent.append(text) or True)
+    monkeypatch.setattr(
+        telegram,
+        "send_message",
+        lambda text, **kwargs: sent.append(text) or True,
+    )
     monkeypatch.setattr(telegram.monotonic_time, "monotonic", lambda: clock[0])
 
     assert telegram.log_error("fetch failed", event_key="fetch:X") is True
@@ -164,7 +374,7 @@ def test_error_alert_is_rate_limited_and_recovery_clears_it(monkeypatch):
     assert len(sent) == 3
 
 
-def test_summary_aggregates_distinct_trades_net_costs_and_filtered_positions(monkeypatch):
+def test_summary_aggregates_distinct_trades_and_filtered_positions(monkeypatch):
     monkeypatch.setattr(
         telegram,
         "mt5",
@@ -195,7 +405,6 @@ def test_summary_aggregates_distinct_trades_net_costs_and_filtered_positions(mon
         "opened": 2,
         "closed": 1,
         "symbols": ["EURUSD", "GBPUSD", "USDJPY"],
-        "realized_net": pytest.approx(11.5),
         "open_count": 1,
         "floating": pytest.approx(2.5),
     }
@@ -273,10 +482,7 @@ def test_deals_by_signal_maps_zero_magic_close_to_prior_open_and_excludes_manual
     assert {call.get("position") for call in history_calls[1:]} == {700, 800}
     assert len(grouped[77]) == 1
     assert grouped[77][0]["magic"] == 77
-    summary = telegram._summarize_signal(
-        {"name": "Ranger", "magic": 77}, grouped[77], []
-    )
-    assert summary["realized_net"] == pytest.approx(11.6)
+    summary = telegram._summarize_signal({"name": "Ranger", "magic": 77}, grouped[77], [])
     assert summary["closed"] == 1
 
 
@@ -316,7 +522,7 @@ def test_deals_by_signal_uses_same_period_open_without_position_lookup(monkeypat
     assert [deal["magic"] for deal in grouped[77]] == [77, 77]
     assert telegram._summarize_signal(
         {"name": "Ranger", "magic": 77}, grouped[77], []
-    )["realized_net"] == 15
+    )["closed"] == 1
 
 
 def test_reversal_deal_counts_as_both_open_and_close(monkeypatch):
@@ -379,6 +585,11 @@ def test_startup_report_sends_today_so_far_each_call_without_scheduled_state(
         "send_message",
         lambda message, **kwargs: messages.append((message, kwargs)) or True,
     )
+    monkeypatch.setattr(
+        telegram,
+        "_account_balance_snapshot",
+        lambda db: ((1000.0, 900.0), None),
+    )
     signals = [{"name": "Ranger", "magic": 77}]
 
     assert telegram.startup_report(signals, now=now) is True
@@ -386,7 +597,10 @@ def test_startup_report_sends_today_so_far_each_call_without_scheduled_state(
     assert len(messages) == 2
     assert all("Today so far trading report" in message for message, _ in messages)
     assert all("2026-05-02" in message for message, _ in messages)
-    assert all(options == {"parse_mode": "HTML"} for _, options in messages)
+    assert all(
+        options == {"parse_mode": "HTML", "notification_type": "report"}
+        for _, options in messages
+    )
     assert len(history_calls) == 2
     for history_call in history_calls:
         assert history_call["date_from"] == datetime(
@@ -433,6 +647,11 @@ def test_daily_report_sends_once_and_persists_success(monkeypatch, tmp_path):
         "send_message",
         lambda text, **kwargs: messages.append((text, kwargs)) or True,
     )
+    monkeypatch.setattr(
+        telegram,
+        "_account_balance_snapshot",
+        lambda db: ((1000.0, 1000.0), None),
+    )
     db_path = tmp_path / "bot.sqlite3"
     db = Database(str(db_path))
     now = datetime(2026, 5, 2, 0, 0, tzinfo=ZoneInfo("Africa/Lagos"))
@@ -442,7 +661,10 @@ def test_daily_report_sends_once_and_persists_success(monkeypatch, tmp_path):
         assert telegram.daily_log(signals, db, now=now) is False
         assert len(messages) == 1
         assert "2026-05-01" in messages[0][0]
-        assert messages[0][1] == {"parse_mode": "HTML"}
+        assert messages[0][1] == {
+            "parse_mode": "HTML",
+            "notification_type": "report",
+        }
         history_args = next(args for kind, args in calls if kind == "history")
         assert history_args["date_from"] == datetime(2026, 4, 30, 23, 0, tzinfo=timezone.utc)
         assert history_args["date_to"] == datetime(2026, 5, 1, 23, 0, tzinfo=timezone.utc)
@@ -467,6 +689,11 @@ def test_failed_daily_delivery_is_retried(monkeypatch):
         telegram,
         "open_orders",
         lambda **kwargs: {"success": True, "data": []},
+    )
+    monkeypatch.setattr(
+        telegram,
+        "_account_balance_snapshot",
+        lambda db: ((1000.0, 1000.0), None),
     )
     sends = iter((False, True))
     monkeypatch.setattr(telegram, "send_message", lambda text, **kwargs: next(sends))
@@ -549,6 +776,11 @@ def test_live_loop_alerts_on_mt5_connection_failure(monkeypatch, tmp_path):
     live_bot = importlib.import_module("live_bot.live_bot")
     events = []
     monkeypatch.setattr(live_bot, "initialize_telegram", lambda: False)
+    monkeypatch.setattr(
+        live_bot,
+        "configure_notification_state",
+        lambda db: pytest.fail("Telegram state should not be initialized"),
+    )
     monkeypatch.setattr(
         live_bot,
         "connect",
@@ -679,7 +911,9 @@ def test_only_drawdown_reasons_are_logged_and_displayed(
         assert "Trading session" not in events[0][0]
         assert "Weekend" not in events[0][0]
     else:
-        assert len(events) == 2
+        assert len(events) == 1
+        assert events[0][1]["event_key"] == "trading_drawdown:maximum:77:EURUSD"
+        assert events[0][1]["notification_type"] == "maximum_drawdown"
         assert all("Trading session" not in message for message, _ in events)
         assert all("An order" not in message for message, _ in events)
 

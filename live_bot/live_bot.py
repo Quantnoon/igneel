@@ -17,6 +17,7 @@ from live_bot.live_config import active_config
 from live_bot.monitor import can_trade, quantnoon_signal_provider
 from live_bot.telegram import (
     clear_alert,
+    configure_notification_state,
     daily_log,
     initialize_telegram,
     log_error,
@@ -78,13 +79,19 @@ def _report_drawdown_status(signal, symbol, status):
         if "maximum drawdown" in lower_reason:
             active_types.add("maximum")
 
+    if "maximum" in active_types:
+        drawdown_types = ("maximum",)
+    elif "daily" in active_types:
+        drawdown_types = ("daily",)
+    else:
+        drawdown_types = ()
     for drawdown_type in ("daily", "maximum"):
         event_key = "trading_drawdown:%s:%s:%s" % (
             drawdown_type,
             signal["magic"],
             symbol,
         )
-        if drawdown_type not in active_types:
+        if drawdown_type not in drawdown_types:
             clear_alert(event_key)
             continue
         matching_reasons = [
@@ -101,6 +108,7 @@ def _report_drawdown_status(signal, symbol, status):
             ),
             event_key=event_key,
             severity="warning",
+            notification_type=drawdown_type + "_drawdown",
         )
 
     if reasons:
@@ -265,7 +273,7 @@ def _process_signal_symbol(
             order_id,
             symbol,
         )
-        log_event(message)
+        log_event(message, notification_type="trade_opened")
         print("%s: %s order placed" % (symbol, pos))
         return
 
@@ -313,7 +321,8 @@ def _process_signal_symbol(
                     clear_alert(close_key)
                     log_event(
                         "Closed %s trade %s on %s."
-                        % (signal.get("name", "Signal"), row.get("id"), symbol)
+                        % (signal.get("name", "Signal"), row.get("id"), symbol),
+                        notification_type="trade_closed",
                     )
                 else:
                     log_error(
@@ -338,9 +347,12 @@ def _wait_for_stop(stop_event, seconds):
 
 def run_bot(stop_event=None):
     """Run the live bot until stopped, finishing the current signal pass first."""
-    initialize_telegram()
-    connection = connect(active_config["auth"])
+    db = Database(active_config["name"])
+    connection = {}
     try:
+        if initialize_telegram():
+            configure_notification_state(db)
+        connection = connect(active_config["auth"])
         if (
             not connection.get("success")
             or connection.get("error") is not None
@@ -353,15 +365,21 @@ def run_bot(stop_event=None):
             )
             raise SystemExit(1)
         clear_alert("mt5_connection")
-        _run_connected_bot(stop_event)
+        _run_connected_bot(stop_event, db)
     finally:
         if connection.get("success"):
             mt5.shutdown()
+        close = getattr(db, "close", None)
+        if callable(close):
+            close()
 
 
-def _run_connected_bot(stop_event):
+def _run_connected_bot(stop_event, db=None):
     account = Account()
-    db = Database(active_config["name"])
+    if db is None:
+        db = Database(active_config["name"])
+        if initialize_telegram():
+            configure_notification_state(db)
     symbols = active_config["symbols"]
     date_range = active_config["date_range"]
     timeframes = active_config["timeframes"]
@@ -376,7 +394,7 @@ def _run_connected_bot(stop_event):
 
     if startup_report_enabled():
         try:
-            startup_report(signals)
+            startup_report(signals, db=db)
         except Exception as exc:
             log_error(
                 "Telegram startup report failed: %s" % exc,

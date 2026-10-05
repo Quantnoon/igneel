@@ -119,12 +119,19 @@ end;
 function ValidateEnv: Boolean;
 var
   LoginValue: string;
+  TerminalPath: string;
 begin
   Result := False;
 
-  if FindEnvValue('TERMINAL_PATH') = '' then
+  TerminalPath := FindEnvValue('TERMINAL_PATH');
+  if TerminalPath = '' then
   begin
-    MsgBox('TERMINAL_PATH is required and must have a value.', mbError, MB_OK);
+    MsgBox('TERMINAL_PATH is required. Enter the full path to your broker''s terminal64.exe.', mbError, MB_OK);
+    Exit;
+  end;
+  if not FileExists(TerminalPath) then
+  begin
+    MsgBox('TERMINAL_PATH must point to an existing terminal64.exe file:' + #13#10 + TerminalPath, mbError, MB_OK);
     Exit;
   end;
   if FindEnvValue('LOGIN') = '' then
@@ -158,7 +165,7 @@ begin
   EnvPage := CreateCustomPage(
     wpSelectDir,
     'Environment settings',
-    'Enter or paste standard KEY=value lines. These values will be saved in a local .env file beside the application.'
+    'Enter or paste standard KEY=value lines. Set TERMINAL_PATH to the full path of the terminal64.exe installed by your broker. These values will be saved in a local .env file beside the application.'
   );
   EnvMemo := TNewMemo.Create(WizardForm);
   EnvMemo.Parent := EnvPage.Surface;
@@ -166,7 +173,7 @@ begin
   EnvMemo.ScrollBars := ssVertical;
   EnvMemo.WordWrap := True;
   EnvMemo.Text :=
-    'TERMINAL_PATH="C:\Program Files\MetaTrader 5\terminal64.exe"' + #13#10 +
+    'TERMINAL_PATH=' + #13#10 +
     'LOGIN=' + #13#10 +
     'PASSWORD=' + #13#10 +
     'SERVER=' + #13#10 +

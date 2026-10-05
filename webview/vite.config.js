@@ -29,6 +29,7 @@ function strategyResources() {
 }
 
 export default defineConfig({
+  envPrefix: ["VITE_", "PUBLIC_"],
   plugins: [react(), tailwindcss(), strategyResources()],
   resolve: {
     alias: {

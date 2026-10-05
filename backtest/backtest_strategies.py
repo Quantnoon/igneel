@@ -6,9 +6,13 @@ def sr_entry(df, i):
     resistance_high = df["resistance_high_H4"].values
     resistance_low = df["resistance_low_H4"].values
     high = df["high_M15"].values
-    low = df["high_M15"].values
+    low = df["low_M15"].values
 
     volatility_regime = df["volatility_regime_M15"].values
+
+    atr = df["atr_M15"].values
+
+    atr_multiplier = 1.0
 
     if volatility_regime[i] > 1:
         if high[i] < resistance_high[i] and low[i] > resistance_low[i] and resistance_low[i] > support_high[i]:
@@ -18,8 +22,8 @@ def sr_entry(df, i):
 
             zone = high_range * 100 / zone_range
 
-            if zone < 50:
-                return "sell", resistance_high[i], None
+            if zone < 30:
+                return "sell", resistance_high[i] + atr[i] * atr_multiplier, None
 
         if high[i] < support_high[i] and low[i] > support_low[i] and support_high[i] < resistance_low[i]:
             zone_range = support_high[i] - support_low[i]
@@ -28,8 +32,8 @@ def sr_entry(df, i):
 
             zone = high_range * 100 / zone_range
 
-            if zone > 50:
-                return "buy", support_low[i], None
+            if zone > 70:
+                return "buy", support_low[i] - atr[i] * atr_multiplier, None
         
     return None, None, None
 
@@ -49,9 +53,6 @@ def sr_exit(df, i, pos):
 def consolidation_entry(df, i):
     consolidation = df["consolidation_H1"].values
     consolidation_high = df["consolidation_high_H1"].values
-    consolidation_low = df["consolidation_low_H1"].values
-    high = df["high_H1"].values
-    low = df["low_H1"].values
     trend = df["ema_trend_H1"].values
 
     if consolidation[i] == False:

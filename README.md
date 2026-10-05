@@ -20,9 +20,24 @@ Igneel is an algorithmic trading engine for market analysis, order execution, tr
 - `python -m backtest.backtest` (preferred) or `python backtest/backtest.py` - strategy backtesting system configured through `backtest/backtest_config.py`.
 - `webview/` - web interface for viewing market charts, strategies, and backtest results.
 
+  ## Webview download subscriptions
+
+  The webview records a strategy subscription before starting a bot download. Configure these build-time variables for the webview deployment:
+
+  - `PUBLIC_API_URL` - API base URL; the webview posts to `<PUBLIC_API_URL>/api/strategy-subscriptions`.
+  - `PUBLIC_WEBHOOK_SECRET` - sent as the `x-webhook-secret` request header.
+
+  The subscription API must allow cross-origin `POST` requests from the webview origin and permit the `Content-Type` and `x-webhook-secret` headers. Both values are included in the browser bundle; do not use this approach for a secret that must remain private.
+
 ## Telegram notifications
 
-The live bot can send daily trade summaries and operational alerts through a Telegram bot. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the local `.env` file beside the executable, or at the project root when running from this checkout. Keep the token private; Telegram notifications are disabled with a local warning when either value is missing.
+The live bot can send daily trade summaries and operational alerts through a Telegram bot. Set `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` in the local `.env` file beside the executable, or at the project root when running from this checkout. Keep the token private; when either value is missing, Telegram notifications are silently skipped and the trading bot continues running.
+
+## Installed live bot configuration
+
+The installer creates a separate `.env` file beside the installed executable at `%LOCALAPPDATA%\Programs\<App Name>\.env`. During setup, set `TERMINAL_PATH` to the exact `terminal64.exe` installed by your broker, for example `TERMINAL_PATH="C:\Program Files\Your Broker MT5\terminal64.exe"`. The installer requires that this file already exists.
+
+If the installed bot reports MetaTrader initialization error `-10003` or `Process create failed`, fully close the bot, correct `TERMINAL_PATH` in that installed `.env`, open the configured `terminal64.exe` manually once, then start the bot again. Do not copy, commit, or share this `.env`: it contains your MT5 credentials and may contain Telegram secrets.
 
 The daily report is sent after midnight in `Africa/Lagos` and covers the previous calendar day. Telegram delivery failures are logged locally and do not stop the trading loop.
 

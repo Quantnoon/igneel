@@ -3,6 +3,7 @@
 from datetime import datetime, time, timedelta, timezone
 import html
 import logging
+import math
 import os
 import re
 import time as monotonic_time
@@ -20,28 +21,108 @@ _REQUEST_TIMEOUT_SECONDS = 8
 _MESSAGE_LIMIT = 4096
 _ALERT_COOLDOWN_SECONDS = 5 * 60
 _REPORT_TABLE = "telegram_daily_report"
-_missing_config_warned = False
+_NOTIFICATION_STATE_TABLE = "telegram_notification_state"
+_NOTIFICATION_EMOJIS = {
+    "info": "ℹ️",
+    "report": "📊",
+    "trade_opened": "🟢",
+    "trade_closed": "🔴",
+    "warning": "⚠️",
+    "error": "❌",
+    "daily_drawdown": "📉",
+    "maximum_drawdown": "🛑",
+}
 _recent_alerts = {}
 _delivery_retry_after = 0.0
 _last_delivery_failure_logged = None
+_notification_db = None
+_daily_muted_date = ""
+_maximum_muted = False
 
 
 def initialize_telegram():
-    """Check Telegram configuration and warn once if notifications are off."""
-    global _missing_config_warned
-
+    """Return whether Telegram notifications are fully configured."""
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
-    if token and chat_id:
-        return True
+    return bool(token and chat_id)
 
-    if not _missing_config_warned:
-        logger.warning(
-            "Telegram notifications are disabled; set TELEGRAM_BOT_TOKEN and "
-            "TELEGRAM_CHAT_ID to enable them."
-        )
-        _missing_config_warned = True
-    return False
+
+def configure_notification_state(db):
+    """Load persistent Telegram mute state from the deployment database."""
+    global _notification_db, _daily_muted_date, _maximum_muted
+
+    _notification_db = db
+    payload = {"id": 1, "daily_muted_date": "", "maximum_muted": 0}
+    try:
+        created = db.create_table(_NOTIFICATION_STATE_TABLE, payload)
+        if not created.get("success"):
+            raise RuntimeError(created.get("error"))
+        row = db.get_row(_NOTIFICATION_STATE_TABLE, "id", 1)
+        if not row.get("success"):
+            inserted = db.add_to_table(_NOTIFICATION_STATE_TABLE, payload)
+            if not inserted.get("success"):
+                raise RuntimeError(inserted.get("error"))
+            state = payload
+        else:
+            state = row.get("data") or payload
+        _daily_muted_date = str(state.get("daily_muted_date") or "")
+        _maximum_muted = bool(state.get("maximum_muted"))
+        return True
+    except Exception as exc:
+        _notification_db = None
+        _daily_muted_date = ""
+        _maximum_muted = False
+        logger.error("Unable to initialize Telegram notification state (%s).", type(exc).__name__)
+        return False
+
+
+def _lagos_date(now=None):
+    if now is None:
+        return datetime.now(_LAGOS).date()
+    if now.tzinfo is None or now.utcoffset() is None:
+        return now.replace(tzinfo=_LAGOS).date()
+    return now.astimezone(_LAGOS).date()
+
+
+def _notification_allowed(notification_type):
+    if _maximum_muted:
+        return False
+    if (
+        _daily_muted_date == _lagos_date().isoformat()
+        and notification_type != "maximum_drawdown"
+    ):
+        return False
+    return True
+
+
+def _persist_notification_mute(notification_type):
+    global _daily_muted_date, _maximum_muted
+
+    if notification_type == "daily_drawdown":
+        _daily_muted_date = _lagos_date().isoformat()
+    elif notification_type == "maximum_drawdown":
+        _maximum_muted = True
+    else:
+        return
+
+    if _notification_db is None:
+        logger.error("Telegram mute state changed in memory but no database is configured.")
+        return
+    updated = _notification_db.update_row(
+        _NOTIFICATION_STATE_TABLE,
+        {
+            "id": 1,
+            "daily_muted_date": _daily_muted_date,
+            "maximum_muted": int(_maximum_muted),
+        },
+    )
+    if not updated.get("success"):
+        logger.error("Unable to persist Telegram notification mute state.")
+
+
+def _typed_message(text, notification_type):
+    emoji = _NOTIFICATION_EMOJIS.get(notification_type, _NOTIFICATION_EMOJIS["info"])
+    return "%s %s" % (emoji, text)
 
 
 def _safe_text(value):
@@ -170,20 +251,21 @@ def _split_html_message(text, limit=_MESSAGE_LIMIT):
     return chunks or [""]
 
 
-def send_message(text, parse_mode=None):
+def send_message(text, parse_mode=None, notification_type="info"):
     """Send a Telegram Bot API message; failures never escape."""
     global _delivery_retry_after, _last_delivery_failure_logged
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
     if not token or not chat_id:
-        initialize_telegram()
+        return False
+    if not _notification_allowed(notification_type):
         return False
     if monotonic_time.monotonic() < _delivery_retry_after:
         return False
 
     url = "https://api.telegram.org/bot%s/sendMessage" % token
-    safe_text = _safe_text(text)
+    safe_text = _typed_message(_safe_text(text), notification_type)
     chunks = _split_html_message(safe_text) if parse_mode == "HTML" else _split_message(safe_text)
     for chunk in chunks:
         payload = {"chat_id": chat_id, "text": chunk}
@@ -221,6 +303,7 @@ def send_message(text, parse_mode=None):
             return False
     _delivery_retry_after = 0.0
     _last_delivery_failure_logged = None
+    _persist_notification_mute(notification_type)
     return True
 
 
@@ -246,15 +329,15 @@ def clear_alert(event_key):
     _recent_alerts.pop(str(event_key), None)
 
 
-def log_event(message, severity="info"):
+def log_event(message, severity="info", notification_type="info"):
     """Send a non-repeating informational event such as an order open/close."""
     safe_message = _safe_text(message)
     level = getattr(logging, str(severity).upper(), logging.INFO)
     logger.log(level, safe_message)
-    return send_message(safe_message)
+    return send_message(safe_message, notification_type=notification_type)
 
 
-def log_error(error, event_key=None, severity="error"):
+def log_error(error, event_key=None, severity="error", notification_type=None):
     """Send an operational alert, suppressing repeats for five minutes."""
     safe_message = _safe_text(error)
     level = getattr(logging, str(severity).upper(), logging.ERROR)
@@ -266,7 +349,9 @@ def log_error(error, event_key=None, severity="error"):
     if previous is not None and now - previous < _ALERT_COOLDOWN_SECONDS:
         return False
     _recent_alerts[key] = now
-    return send_message(safe_message)
+    if notification_type is None:
+        notification_type = "warning" if str(severity).lower() == "warning" else "error"
+    return send_message(safe_message, notification_type=notification_type)
 
 
 def _as_float(value):
@@ -288,7 +373,6 @@ def _summarize_signal(signal, deals, positions):
     opened_positions = set()
     closed_positions = set()
     symbols = set()
-    realized_net = 0.0
 
     for deal in deals:
         if deal.get("magic") != signal["magic"]:
@@ -302,10 +386,6 @@ def _summarize_signal(signal, deals, positions):
         symbol = deal.get("symbol")
         if symbol:
             symbols.add(str(symbol))
-        realized_net += sum(
-            _as_float(deal.get(field))
-            for field in ("profit", "commission", "swap", "fee")
-        )
 
     signal_positions = [
         position
@@ -326,10 +406,30 @@ def _summarize_signal(signal, deals, positions):
         "opened": len(opened_positions - {None}),
         "closed": len(closed_positions - {None}),
         "symbols": sorted(symbols),
-        "realized_net": realized_net,
         "open_count": len(signal_positions),
         "floating": floating,
     }
+
+
+def _account_balance_snapshot(db):
+    """Return the stored starting balance and the current live MT5 balance."""
+    if db is None:
+        return None, "account database is unavailable"
+    row = db.get_row("account", "id", 1)
+    if not row.get("success"):
+        return None, row.get("error")
+    account_info = mt5.account_info()
+    if account_info is None:
+        return None, "MetaTrader account information is unavailable"
+    data = row.get("data") or {}
+    try:
+        starting_balance = float(data["starting_balance"])
+        current_balance = float(getattr(account_info, "balance"))
+    except (KeyError, TypeError, ValueError, OverflowError, AttributeError):
+        return None, "account balances are missing or non-numeric"
+    if not math.isfinite(starting_balance) or not math.isfinite(current_balance):
+        return None, "account balances must be finite"
+    return (starting_balance, current_balance), None
 
 
 def _deals_by_signal(signals, date_from, date_to):
@@ -412,11 +512,13 @@ def _build_daily_report(
     signals,
     deals_by_magic,
     positions,
+    starting_balance,
+    current_balance,
     title="Daily trading report",
     period_label="Date",
 ):
     sections = [
-        "📊 <b>%s</b>\n📅 <b>%s:</b> %s (Africa/Lagos)"
+        "<b>%s</b>\n📅 <b>%s:</b> %s (Africa/Lagos)"
         % (html.escape(title), html.escape(period_label), report_date.isoformat())
     ]
     for signal in signals:
@@ -444,12 +546,15 @@ def _build_daily_report(
         signal_lines.append("🔎 <b>Symbols:</b> %s" % html.escape(symbol_parts[0]))
         signal_lines.extend("   %s" % html.escape(part) for part in symbol_parts[1:])
 
-        realized_emoji = "🟢" if summary["realized_net"] >= 0 else "🔴"
         floating_emoji = "🟢" if summary["floating"] >= 0 else "🔴"
+        balance_change = current_balance - starting_balance
+        if balance_change > 0:
+            balance_line = "📈 <b>Total amount gained:</b> <b>%.2f</b>" % balance_change
+        else:
+            balance_line = "📉 <b>Total amount lost:</b> <b>%.2f</b>" % abs(balance_change)
         signal_lines.extend(
             [
-                "%s <b>Realized net P&amp;L:</b> <b>%.2f</b>"
-                % (realized_emoji, summary["realized_net"]),
+                balance_line,
                 "📂 <b>Open positions:</b> %s" % summary["open_count"],
                 "%s <b>Floating P&amp;L:</b> <b>%.2f</b>"
                 % (floating_emoji, summary["floating"]),
@@ -499,7 +604,7 @@ def startup_report_enabled():
     }
 
 
-def startup_report(signals, now=None):
+def startup_report(signals, now=None, db=None):
     """Send today's Lagos report through the current time without saved state."""
     if not signals or not initialize_telegram():
         return False
@@ -525,15 +630,27 @@ def startup_report(signals, now=None):
         return False
     clear_alert("telegram_startup_positions")
 
+    balances, balance_error = _account_balance_snapshot(db)
+    if balance_error:
+        log_error(
+            "Unable to read account balances for the Telegram startup report: %s"
+            % balance_error,
+            event_key="telegram_startup_balances",
+        )
+        return False
+    clear_alert("telegram_startup_balances")
+
     message = _build_daily_report(
         report_date,
         signals,
         deals_by_magic,
         open_result.get("data") or [],
+        balances[0],
+        balances[1],
         title="Today so far trading report",
         period_label="Date",
     )
-    return send_message(message, parse_mode="HTML")
+    return send_message(message, parse_mode="HTML", notification_type="report")
 
 
 def _report_state(db):
@@ -586,13 +703,24 @@ def daily_log(signals, db, now=None):
         return False
     clear_alert("telegram_daily_positions")
 
+    balances, balance_error = _account_balance_snapshot(db)
+    if balance_error:
+        log_error(
+            "Unable to read account balances for the Telegram report: %s" % balance_error,
+            event_key="telegram_daily_balances",
+        )
+        return False
+    clear_alert("telegram_daily_balances")
+
     message = _build_daily_report(
         report_date,
         signals,
         deals_by_magic,
         open_result.get("data") or [],
+        balances[0],
+        balances[1],
     )
-    if not send_message(message, parse_mode="HTML"):
+    if not send_message(message, parse_mode="HTML", notification_type="report"):
         # send_message already logs a token-safe local delivery error. Avoid
         # immediately retrying the same failed Telegram request as an alert.
         return False
