@@ -114,11 +114,10 @@ def test_sandbox_analysis_prompts_use_python3_and_multiline_heredocs():
     assert "closing delimiter each occupy separate lines" in GRANDINE_SYSTEM_PROMPT
 
 
-def test_grandine_is_offline_and_defines_its_atr_risk_contract():
-    assert "You are offline" in GRANDINE_SYSTEM_PROMPT
-    assert "Python networking libraries" in GRANDINE_SYSTEM_PROMPT
+def test_grandine_uses_resource_fetching_and_defines_its_atr_risk_contract():
+    assert "use `fetch_url`" in GRANDINE_SYSTEM_PROMPT
+    assert "web-search tools" in GRANDINE_SYSTEM_PROMPT
     assert "web_search" not in GRANDINE_SYSTEM_PROMPT
-    assert "fetch_url" not in GRANDINE_SYSTEM_PROMPT
     assert "Wilder ATR(14)" in GRANDINE_SYSTEM_PROMPT
     assert "preceding 50 valid" in GRANDINE_SYSTEM_PROMPT
     assert "P/L <= -2%" in GRANDINE_SYSTEM_PROMPT
@@ -128,15 +127,15 @@ def test_grandine_is_offline_and_defines_its_atr_risk_contract():
     assert "<returned-path>" in GRANDINE_SYSTEM_PROMPT
     assert "sandbox_script" in GRANDINE_SYSTEM_PROMPT
     assert "timeframe plan omitted M15" in GRANDINE_SYSTEM_PROMPT
-    assert "Never\nrun `ls /workspace`, `ls /workspace/market`" in GRANDINE_SYSTEM_PROMPT
+    assert "Never\nrun `ls /workspace`, `ls /workspace/grandine/market`" in GRANDINE_SYSTEM_PROMPT
     assert "evaluate_grandine_position" not in GRANDINE_SYSTEM_PROMPT
 
 
-def test_grandine_is_registered_with_the_generic_market_data_tool():
+def test_grandine_is_registered_with_its_workspace_market_data_tool():
     source = (PROJECT_ROOT / "agent" / "deep_agents.py").read_text(encoding="utf-8")
     grandine_section = source.split("grandine_subagent =", 1)[1].split("ignia_agent =", 1)[0]
 
-    assert "get_price_data_file" in grandine_section
+    assert "grandine_price_data_file" in grandine_section
     assert "get_position_management_data_file" not in source
 
 
@@ -148,6 +147,11 @@ def load_tools(monkeypatch):
 
     backend = ModuleType("agent.agent_backend")
     backend.sandbox_backend = MagicMock()
+    backend.SANDBOX_WORKSPACES = {
+        "atlas": "/workspace/atlas/market",
+        "acnologia": "/workspace/acnologia/market",
+        "grandine": "/workspace/grandine/market",
+    }
     collection = ModuleType("collection")
     collection.PriceDataCollection = object
     connection = ModuleType("connection")
@@ -301,7 +305,7 @@ def test_price_data_file_normalizes_and_uploads_valid_timeframe_list(monkeypatch
     }
     assert result == {
         "success": True,
-        "path": "/workspace/market/XAUUSD_1W_aaaaaaaa.csv",
+        "path": "/workspace/atlas/market/XAUUSD_1W_aaaaaaaa.csv",
         "symbol": "XAUUSD",
         "symbols": ["XAUUSD"],
         "timeframes": ["D1", "H4"],
@@ -310,7 +314,41 @@ def test_price_data_file_normalizes_and_uploads_valid_timeframe_list(monkeypatch
         "columns": ["time", "open", "close"],
     }
     sandbox_backend.upload_files.assert_called_once_with([
-        ("/workspace/market/XAUUSD_1W_aaaaaaaa.csv", b"time,open,close\n2026-01-01,1.0,1.5\n")
+        ("/workspace/atlas/market/XAUUSD_1W_aaaaaaaa.csv", b"time,open,close\n2026-01-01,1.0,1.5\n")
+    ])
+
+
+@pytest.mark.parametrize(
+    ("workspace", "expected_directory"),
+    (
+        ("atlas", "/workspace/atlas/market"),
+        ("acnologia", "/workspace/acnologia/market"),
+        ("grandine", "/workspace/grandine/market"),
+    ),
+)
+def test_workspace_scoped_price_tools_upload_only_to_their_owned_folder(
+    monkeypatch, workspace, expected_directory,
+):
+    tools, _ = load_tools(monkeypatch)
+    backend = MagicMock()
+    backend.upload_files.return_value = [SimpleNamespace(error=None)]
+
+    class Collection:
+        def __init__(self, **_kwargs):
+            pass
+
+        def get_price_data(self, _symbol):
+            return Frame()
+
+    monkeypatch.setattr(tools, "PriceDataCollection", Collection)
+    monkeypatch.setattr(tools, "is_connected", lambda: True)
+    monkeypatch.setattr(tools.uuid, "uuid4", lambda: type("Id", (), {"hex": "b" * 32})())
+
+    result = tools.create_price_data_file_tool(backend, workspace)("XAUUSD", ["M15"], "1W")
+
+    assert result["path"] == f"{expected_directory}/XAUUSD_1W_bbbbbbbb.csv"
+    backend.upload_files.assert_called_once_with([
+        (result["path"], b"time,open,close\n2026-01-01,1.0,1.5\n"),
     ])
 
 

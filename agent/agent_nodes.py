@@ -21,6 +21,7 @@ from agent.agent_tools import (
 class TradingState(TypedDict, total=False):
     symbol: str
     goal: str
+    resources: list[str]
     research_context: str
 
     # Market analysis
@@ -260,6 +261,7 @@ async def market_analysis_node(
     symbol = state["symbol"]
     goal = validate_goal(state.get("goal"))
     research_context = state.get("research_context", "")
+    resources = state.get("resources", [])
 
     print(
         f"\n\n[GRAPH] ATLAS: "
@@ -282,6 +284,9 @@ Goal:
 
 Persisted research context from prior cycles:
 {research_context or "None. Research and select an approach for this run."}
+
+User-provided resources (text or URLs):
+{resources or "None."}
 
 There are currently no open trades requiring management.
 
@@ -814,6 +819,7 @@ async def order_manager_node(
     symbol = state["symbol"]
     goal = validate_goal(state.get("goal"))
     research_context = state.get("research_context", "")
+    resources = state.get("resources", [])
 
     open_trades_exist = state.get(
         "open_trades_exist",
@@ -852,6 +858,9 @@ Goal:
 
 Active research context to pass to Grandine:
 {research_context or "Unavailable"}
+
+User-provided resources for Grandine:
+{resources or "None."}
 
 Trades detected by the graph:
 

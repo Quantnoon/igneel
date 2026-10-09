@@ -27,7 +27,7 @@ from pathlib import Path
 import os
 
 from agent.paths import AGENT_TOOL_EVENTS_LOG_PATH, ENV_FILE
-from agent.agent_backend import sandbox_backend
+from agent.agent_backend import SANDBOX_WORKSPACES, sandbox_backend
 
 load_dotenv(ENV_FILE)
 
@@ -803,96 +803,112 @@ def _safe_sandbox_filename_component(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
 
 
-def get_price_data_file(
+def create_price_data_file_tool(
+    sandbox_file_backend,
+    workspace: str,
+):
+    """Build a market-data tool confined to one specialist workspace."""
+    if workspace not in SANDBOX_WORKSPACES:
+        raise ValueError(f"Unknown sandbox workspace: {workspace}")
+
+    market_directory = SANDBOX_WORKSPACES[workspace]
+
+    def get_price_data_file(
     symbol: str,
     timeframes: list[str],
     date_range: str,
-):
-    """
-    Retrieve raw market price data and upload it to the sandbox.
-
-    Returns the sandbox file path and dataset metadata. The CSV is a merged
-    frame with ``time`` and, for every requested timeframe ``tf``, the columns
-    ``open_{tf}``, ``high_{tf}``, ``low_{tf}``, and ``close_{tf}``, where
-    ``tf`` is one of M1, M5, M15, H1, H4, D1, or W1. Consumers must select
-    the four suffixed OHLC columns for each timeframe independently; rows can
-    be absent for an individual timeframe in the merged frame.
-    """
-    normalized, failure = _normalized_price_request(
-        [symbol], timeframes, date_range, symbol, []
-    )
-    if failure:
-        return failure
-
-    normalized_symbols, normalized_timeframes, normalized_date_range, normalized_symbol = normalized
-    metadata = _request_metadata(
-        normalized_symbols,
-        normalized_timeframes,
-        normalized_date_range,
-        normalized_symbol,
-    )
-    df, failure = _load_price_frame(
-        normalized_symbols,
-        normalized_timeframes,
-        normalized_date_range,
-        normalized_symbol,
-        [],
-        metadata,
-    )
-    if failure:
-        return failure
-
-    filename = (
-        f"{_safe_sandbox_filename_component(normalized_symbol)}_"
-        f"{_safe_sandbox_filename_component(normalized_date_range)}_"
-        f"{uuid.uuid4().hex[:8]}.csv"
-    )
-
-    path = f"/workspace/market/{filename}"
-
-    buffer = io.BytesIO()
-
-    try:
-        df.to_csv(
-            buffer,
-            index=False,
-        )
-    except Exception:
-        return _request_error(
-            metadata,
-            "Unable to serialize price data for the sandbox.",
-            stage="serialization",
-        )
-
-    try:
-        upload_responses = sandbox_backend.upload_files([
-            (
-                path,
-                buffer.getvalue(),
-            )
-        ])
-    except Exception:
-        return _request_error(
-            metadata,
-            "Unable to upload price data to the sandbox.",
-            stage="sandbox_upload",
-        )
-
-    if (
-        not isinstance(upload_responses, list)
-        or len(upload_responses) != 1
-        or getattr(upload_responses[0], "error", None) is not None
     ):
-        return _request_error(
+        """
+        Retrieve raw market price data and upload it to this agent's sandbox folder.
+
+        Returns the sandbox file path and dataset metadata. The CSV is a merged
+        frame with ``time`` and, for every requested timeframe ``tf``, the columns
+        ``open_{tf}``, ``high_{tf}``, ``low_{tf}``, and ``close_{tf}``. Consumers
+        must select each timeframe's four suffixed OHLC columns independently.
+        """
+        normalized, failure = _normalized_price_request(
+            [symbol], timeframes, date_range, symbol, []
+        )
+        if failure:
+            return failure
+
+        normalized_symbols, normalized_timeframes, normalized_date_range, normalized_symbol = normalized
+        metadata = _request_metadata(
+            normalized_symbols,
+            normalized_timeframes,
+            normalized_date_range,
+            normalized_symbol,
+        )
+        df, failure = _load_price_frame(
+            normalized_symbols,
+            normalized_timeframes,
+            normalized_date_range,
+            normalized_symbol,
+            [],
             metadata,
-            "Unable to upload price data to the sandbox.",
-            stage="sandbox_upload",
+        )
+        if failure:
+            return failure
+
+        filename = (
+            f"{_safe_sandbox_filename_component(normalized_symbol)}_"
+            f"{_safe_sandbox_filename_component(normalized_date_range)}_"
+            f"{uuid.uuid4().hex[:8]}.csv"
         )
 
-    return {
-        "success": True,
-        "path": path,
-        **metadata,
-        "rows": len(df),
-        "columns": list(df.columns),
-    }
+        path = f"{market_directory}/{filename}"
+
+        buffer = io.BytesIO()
+
+        try:
+            df.to_csv(
+                buffer,
+                index=False,
+            )
+        except Exception:
+            return _request_error(
+                metadata,
+                "Unable to serialize price data for the sandbox.",
+                stage="serialization",
+            )
+
+        try:
+            upload_responses = sandbox_file_backend.upload_files([
+                (
+                    path,
+                    buffer.getvalue(),
+                )
+            ])
+        except Exception:
+            return _request_error(
+                metadata,
+                "Unable to upload price data to the sandbox.",
+                stage="sandbox_upload",
+            )
+
+        if (
+            not isinstance(upload_responses, list)
+            or len(upload_responses) != 1
+            or getattr(upload_responses[0], "error", None) is not None
+        ):
+            return _request_error(
+                metadata,
+                "Unable to upload price data to the sandbox.",
+                stage="sandbox_upload",
+            )
+
+        return {
+            "success": True,
+            "path": path,
+            **metadata,
+            "rows": len(df),
+            "columns": list(df.columns),
+        }
+
+    get_price_data_file.__name__ = "get_price_data_file"
+    return get_price_data_file
+
+
+# Retain the module-level tool for existing callers; specialists receive
+# workspace-scoped instances from ``create_price_data_file_tool``.
+get_price_data_file = create_price_data_file_tool(sandbox_backend, "atlas")

@@ -54,7 +54,7 @@ def test_backend_loads_environment_and_passes_langsmith_key_explicitly(monkeypat
     sandbox_client.assert_called_once_with(api_key="sandbox-test-key")
     client.create_sandbox.assert_called_once_with()
     client.create_sandbox.return_value.run.assert_called_once_with(
-        'python3 -m pip install --no-cache-dir pandas numpy --break-system-packages && python3 -c "import pandas, numpy; print(pandas.__version__)"',
+        'python3 -m pip install --no-cache-dir pandas numpy --break-system-packages && mkdir -p /workspace/atlas/market /workspace/acnologia/market /workspace/grandine/market && python3 -c "import pandas, numpy; print(pandas.__version__)"',
         timeout=120,
     )
 
@@ -252,6 +252,33 @@ def test_successful_trader_run_syncs_memory(monkeypatch):
     assert "strategy" not in runner.trading_graph.input_data
 
 
+def test_trader_normalizes_resources_into_graph_input(monkeypatch):
+    runner, _ = load_agent_runner(monkeypatch)
+
+    asyncio.run(runner.run_trader(
+        "test-id", "XAUUSD", 0.01, "Protect capital",
+        [" https://example.com/strategy ", "risk notes"],
+    ))
+
+    assert runner.trading_graph.input_data["resources"] == [
+        "https://example.com/strategy",
+        "risk notes",
+    ]
+
+
+@pytest.mark.parametrize("resources", ("resource", {}, [""], [None], [1]))
+def test_run_trader_rejects_invalid_resources_before_graph_invocation(monkeypatch, resources):
+    runner, backend = load_agent_runner(monkeypatch)
+
+    with pytest.raises(ValueError, match="resources"):
+        asyncio.run(runner.run_trader(
+            "test-id", "XAUUSD", 0.01, "Protect capital", resources,
+        ))
+
+    backend.initialize_memory.assert_not_called()
+    backend.sync_memory.assert_not_called()
+
+
 def test_failed_trader_run_does_not_sync_memory(monkeypatch):
     runner, backend = load_agent_runner(monkeypatch, graph_error=RuntimeError("graph failed"))
 
@@ -287,7 +314,7 @@ def test_run_trader_rejects_missing_goal_before_graph_invocation(monkeypatch, go
     backend.sync_memory.assert_not_called()
 
 
-def test_atlas_uses_the_sandbox_backend_only():
+def test_sandboxed_specialists_use_workspace_specific_backends():
     tree = ast.parse((PROJECT_ROOT / "agent" / "deep_agents.py").read_text(encoding="utf-8"))
     agent_backends = {}
 
@@ -301,5 +328,5 @@ def test_atlas_uses_the_sandbox_backend_only():
         agent_backends[name] = backend
 
     assert agent_backends["atlas_agent"] == "backend_with_sandbox"
-    assert agent_backends["acnologia_agent"] == "backend_with_sandbox"
+    assert agent_backends["acnologia_agent"] == "acnologia_backend_with_sandbox"
     assert agent_backends["ignia_agent"] == "backend"

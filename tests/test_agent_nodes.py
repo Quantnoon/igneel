@@ -40,12 +40,11 @@ def test_prompts_are_goal_driven_and_preserve_specialist_boundaries():
     assert "strategy skill" not in ATLAS_SYSTEM_PROMPT.lower()
     assert "web_search" in ATLAS_SYSTEM_PROMPT
     assert "goal" in ACNOLOGIA_SYSTEM_PROMPT.lower()
-    assert "web_search" in ACNOLOGIA_SYSTEM_PROMPT
+    assert "web_search" not in ACNOLOGIA_SYSTEM_PROMPT
     assert "WEB SOURCES:" in ACNOLOGIA_SYSTEM_PROMPT
     assert "goal and active research context" in IGNIA_SYSTEM_PROMPT
-    assert "You are offline" in GRANDINE_SYSTEM_PROMPT
-    assert "web_search" not in GRANDINE_SYSTEM_PROMPT
-    assert "WEB SOURCES:" not in GRANDINE_SYSTEM_PROMPT
+    assert "use `fetch_url`" in GRANDINE_SYSTEM_PROMPT
+    assert "web-search tools" in GRANDINE_SYSTEM_PROMPT
     assert "never place, modify,\nclose" in GRANDINE_SYSTEM_PROMPT
 
 
@@ -114,10 +113,12 @@ MARKET CONDITION:
 Trending"""})()]}
 
     monkeypatch.setattr(nodes, "atlas_agent", Atlas())
-    result = asyncio.run(nodes.market_analysis_node({"symbol": "XAUUSD", "goal": "Protect capital", "research_context": "old context"}))
+    result = asyncio.run(nodes.market_analysis_node({"symbol": "XAUUSD", "goal": "Protect capital", "research_context": "old context", "resources": ["https://example.com/strategy", "risk notes"]}))
     content = captured["messages"][0]["content"]
     assert "Goal:\nProtect capital" in content
     assert "old context" in content
+    assert "https://example.com/strategy" in content
+    assert "risk notes" in content
     assert "trend following" in result["research_context"]
 
 
@@ -156,19 +157,20 @@ def test_ignia_management_receives_goal_and_research_context(monkeypatch):
             return {"messages": [type("Message", (), {"content": "managed"})()]}
 
     monkeypatch.setattr(nodes, "ignia_agent", Ignia())
-    asyncio.run(nodes.order_manager_node({"symbol": "XAUUSD", "goal": "Protect capital", "research_context": "APPROACH: trend", "open_trades_exist": True, "open_trades": [{"ticket": 1}]}))
+    asyncio.run(nodes.order_manager_node({"symbol": "XAUUSD", "goal": "Protect capital", "research_context": "APPROACH: trend", "resources": ["https://example.com/manage"], "open_trades_exist": True, "open_trades": [{"ticket": 1}]}))
     content = captured["messages"][0]["content"]
     assert "Goal:\nProtect capital" in content
     assert "APPROACH: trend" in content
+    assert "https://example.com/manage" in content
 
 
-def test_deep_agents_grant_web_access_only_to_research_specialists():
+def test_deep_agents_grant_fetch_access_to_grandine_without_web_search():
     source = (AGENT_ROOT / "deep_agents.py").read_text(encoding="utf-8")
     grandine_source = source[source.index('grandine_subagent'):source.index('ignia_agent')]
     assert "web_search" not in grandine_source
-    assert "fetch_url" not in grandine_source
+    assert "fetch_url" in grandine_source
     assert "evaluate_grandine_position" not in grandine_source
-    assert source.count("web_search") == 3
+    assert source.count("web_search") == 2
     assert source.count("fetch_url") == 3
 
 

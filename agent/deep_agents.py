@@ -8,7 +8,7 @@ from agent.agent_tools import (
     get_symbol_specification,
     modify_trade,
     place_trade,
-    get_price_data_file,
+    create_price_data_file_tool,
 )
 
 from agent.agent_models import get_openai_model
@@ -18,9 +18,22 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 from deepagents import create_deep_agent
 from agent.agent_prompts import ATLAS_SYSTEM_PROMPT, ACNOLOGIA_SYSTEM_PROMPT, IGNIA_SYSTEM_PROMPT, GRANDINE_SYSTEM_PROMPT
-from agent.agent_backend import store, backend, backend_with_sandbox
+from agent.agent_backend import (
+    acnologia_backend_with_sandbox,
+    acnologia_sandbox_backend,
+    atlas_sandbox_backend,
+    backend,
+    backend_with_sandbox,
+    grandine_backend_with_sandbox,
+    grandine_sandbox_backend,
+    store,
+)
 
 model = get_openai_model()
+
+atlas_price_data_file = create_price_data_file_tool(atlas_sandbox_backend, "atlas")
+acnologia_price_data_file = create_price_data_file_tool(acnologia_sandbox_backend, "acnologia")
+grandine_price_data_file = create_price_data_file_tool(grandine_sandbox_backend, "grandine")
 
 # ============================================================
 # SPECIALIST DEEP AGENTS
@@ -33,7 +46,7 @@ atlas_agent = create_deep_agent(
     store=store,
     memory=["/memory/AGENTS.md"],
     tools=[
-        get_price_data_file,
+        atlas_price_data_file,
         web_search,
         fetch_url,
     ],
@@ -43,21 +56,19 @@ atlas_agent = create_deep_agent(
 acnologia_agent = create_deep_agent(
     model=model,
     system_prompt=ACNOLOGIA_SYSTEM_PROMPT,
-    backend=backend_with_sandbox,
+    backend=acnologia_backend_with_sandbox,
     store=store,
     memory=["/memory/AGENTS.md"],
     tools=[
-        get_price_data_file,
+        acnologia_price_data_file,
         get_symbol_specification,
-        web_search,
-        fetch_url,
     ],
 )
 
 grandine_subagent = {
     "name": "Grandine",
     "description": (
-        "Offline position-risk specialist for Ignia. For every existing "
+        "Read-only position-risk specialist for Ignia. For every existing "
         "position, use fresh sandbox price analysis plus broker facts to "
         "recommend HOLD, MODIFY_ORDER, or CLOSE_ORDER. Grandine never "
         "executes broker actions."
@@ -65,12 +76,13 @@ grandine_subagent = {
     "system_prompt": GRANDINE_SYSTEM_PROMPT,
     "store": store,
     "memory": ["/memory/AGENTS.md"],
-    "backend": backend_with_sandbox,
+    "backend": grandine_backend_with_sandbox,
     "tools": [
-        get_price_data_file,
+        grandine_price_data_file,
         get_open_trades,
         get_account_snapshot,
         get_symbol_specification,
+        fetch_url,
     ],
     "model": model,
 }

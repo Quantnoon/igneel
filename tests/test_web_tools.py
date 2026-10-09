@@ -184,7 +184,7 @@ def test_fetch_url_reports_network_errors_and_rejects_local_urls(monkeypatch):
     assert "timed out" in web_tools.fetch_url("https://example.com/news")
 
 
-def test_only_market_agent_registers_web_tools_and_prompt_requires_sources():
+def test_market_and_management_agents_register_their_intended_web_tools():
     module = ast.parse((AGENT_ROOT / "deep_agents.py").read_text(encoding="utf-8"))
     registrations = {}
     for statement in module.body:

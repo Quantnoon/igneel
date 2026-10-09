@@ -1,6 +1,7 @@
 import questionary
 import sys
 import math
+import json
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -27,11 +28,20 @@ def main():
 
     goal = questionary.text(
         "Enter the trading goal/task:",
-        default="scalp the market. grow the account in short period of time",
+        default="double the account balance",
         validate=lambda value: (
             True if is_valid_goal(value) else "Enter a non-empty trading goal"
         ),
     ).ask()
+
+    resources_text = questionary.text(
+        "Enter resources as a JSON array (text and/or URLs):",
+        default='["Scalp in lower timeframes"]',
+        validate=lambda value: (
+            True if is_valid_resources(value) else "Enter a JSON array of non-empty strings"
+        ),
+    ).ask()
+    resources = parse_resources(resources_text)
 
     lot_size_text = questionary.text(
         "Enter lot size:",
@@ -48,6 +58,7 @@ def main():
         "symbol": symbol,
         "goal": goal.strip(),
         "lot_size": lot_size,
+        "resources": resources,
     }
 
     print("\nConfiguration")
@@ -55,6 +66,7 @@ def main():
     print(f"Symbol:     {config['symbol']}")
     print(f"Goal:       {config['goal']}")
     print(f"Lot size:   {config['lot_size']}")
+    print(f"Resources:  {len(config['resources'])}")
 
     start = questionary.confirm(
         "Start trading?",
@@ -73,6 +85,7 @@ def main():
                     symbol=symbol,
                     goal=config["goal"],
                     lot_size=config["lot_size"],
+                    resources=config["resources"],
                 )
             )
         except Exception as e:
@@ -94,6 +107,31 @@ def is_valid_lot_size(value):
 
 def is_valid_goal(value):
     return isinstance(value, str) and bool(value.strip())
+
+
+def parse_resources(value):
+    try:
+        resources = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("resources must be a JSON array of non-empty strings") from exc
+
+    if not isinstance(resources, list):
+        raise ValueError("resources must be a JSON array of non-empty strings")
+
+    normalized = []
+    for resource in resources:
+        if not isinstance(resource, str) or not (cleaned := resource.strip()):
+            raise ValueError("resources must be a JSON array of non-empty strings")
+        normalized.append(cleaned)
+    return normalized
+
+
+def is_valid_resources(value):
+    try:
+        parse_resources(value)
+    except ValueError:
+        return False
+    return True
 
 
 if __name__ == "__main__":

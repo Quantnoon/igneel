@@ -52,7 +52,7 @@ def test_cli_lot_size_validation_rejects_invalid_values(monkeypatch, value):
 
 def test_cli_passes_converted_lot_size_to_runner(monkeypatch):
     cli, questionary = load_cli(monkeypatch)
-    text_answers = iter(("test-id", "XAUUSD", "Protect capital", "0.01"))
+    text_answers = iter(("test-id", "XAUUSD", "Protect capital", "[]", "0.01"))
 
     class Prompt:
         def __init__(self, answer):
@@ -74,6 +74,19 @@ def test_cli_passes_converted_lot_size_to_runner(monkeypatch):
     assert captured["lot_size"] == 0.01
     assert isinstance(captured["lot_size"], float)
     assert captured["goal"] == "Protect capital"
+    assert captured["resources"] == []
+
+
+@pytest.mark.parametrize("value", ('["https://example.com", " rules "]', "[]"))
+def test_cli_resource_validation_accepts_json_string_arrays(monkeypatch, value):
+    cli, _ = load_cli(monkeypatch)
+    assert cli.is_valid_resources(value) is True
+
+
+@pytest.mark.parametrize("value", ("", "{}", "[1]", '[" "]'))
+def test_cli_resource_validation_rejects_invalid_json_arrays(monkeypatch, value):
+    cli, _ = load_cli(monkeypatch)
+    assert cli.is_valid_resources(value) is False
 
 
 @pytest.mark.parametrize("value", ("Protect capital", "  Seek steady growth  "))
