@@ -1,6 +1,7 @@
 import { ArrowRight, CalendarRange } from "lucide-react";
 
 import { useResourceJson } from "../../../shared/hooks/use-resource-json.js";
+import { fetchCachedCsvText } from "../../../shared/api/fetch-csv-chunks.js";
 import { extractPriceDataRange, formatUtcDate } from "../../../shared/lib/price-data-range.js";
 
 function durationLabel(elapsedDays) {
@@ -9,7 +10,7 @@ function durationLabel(elapsedDays) {
 }
 
 export function PriceDataTimeline({ dfPath }) {
-  const { data: range, loading } = useResourceJson(dfPath, extractPriceDataRange, { allowMissing: true });
+  const { data: range, loading } = useResourceJson(dfPath, extractPriceDataRange, { allowMissing: true, fetcher: fetchCachedCsvText });
   const available = range && Number.isFinite(range.start) && Number.isFinite(range.end);
 
   return (

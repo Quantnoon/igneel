@@ -50,3 +50,26 @@ test("includes session levels when expanding the visible price scale", () => {
   assert.equal(range.max, 31);
   assert.equal(range.min, 9);
 });
+
+test("includes consolidation bounds but excludes consolidation IDs from the visible price scale", () => {
+  const consolidationRecords = [{
+    low: 10,
+    high: 12,
+    consolidation_H1: true,
+    consolidation_id_H1: 900,
+    consolidation_high_H1: 13,
+    consolidation_low_H1: 9,
+  }];
+  const indicators = [{
+    type: "CONSOLIDATION_HOTSPOT",
+    columns: ["consolidation_H1", "consolidation_id_H1", "consolidation_high_H1", "consolidation_low_H1"],
+  }];
+  assert.deepEqual(priceLevelColumns(indicators), ["consolidation_high_H1", "consolidation_low_H1"]);
+  const range = visiblePriceRange(consolidationRecords, priceLevelColumns(indicators), {
+    categoryCount: 1,
+    start: 0,
+    end: 100,
+  });
+  assert.equal(range.max, 13.2);
+  assert.equal(range.min, 8.8);
+});

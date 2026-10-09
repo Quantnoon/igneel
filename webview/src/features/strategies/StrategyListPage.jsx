@@ -1,7 +1,7 @@
 import { ArrowRight } from "lucide-react";
+import { Link } from "react-router";
 
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Link } from "../../app/router.jsx";
 import { Alert } from "../../shared/components/Alert.jsx";
 import { isAccessible } from "./lib/manifest.js";
 

@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { HighchartsChart } from "../../../shared/components/HighchartsChart.jsx";
 
-export function ResultChart({ options, description, active, wide = false, children }) {
+export function ResultChart({ options, description, active, wide = false, compact = false, children }) {
   const title = options.title?.text;
   const accessibleOptions = useMemo(() => ({
     ...options,
@@ -26,7 +26,7 @@ export function ResultChart({ options, description, active, wide = false, childr
           <HighchartsChart
             active={active}
             options={accessibleOptions}
-            className={`w-full bg-background ${wide ? "h-[23.75rem]" : "h-[20.625rem]"}`}
+            className={`w-full bg-background ${compact ? "h-[15rem]" : wide ? "h-[23.75rem]" : "h-[20.625rem]"}`}
             data-chart-surface="page-background"
           />
         </div>

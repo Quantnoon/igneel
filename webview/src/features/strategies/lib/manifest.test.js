@@ -5,6 +5,10 @@ import { MANIFEST_PATH, activeEnvironment, findStrategy, isAccessible, parseStra
 
 const strategy = {
   name: "strategies/support_resistance",
+  botUrls: {
+    windows: "https://example.com/support-resistance-windows.ex5",
+    mac: "https://example.com/support-resistance-mac.ex5",
+  },
   env: {
     production: { df: [], config: "", result: "" },
     development: {
@@ -23,6 +27,7 @@ test("parses new strategy resources and derives the short route name", () => {
   assert.equal(MANIFEST_PATH, "strategies/strategies.json");
   assert.equal(entry.name, "support_resistance");
   assert.equal(entry.resourceIdentity, "strategies/support_resistance");
+  assert.deepEqual(entry.botUrls, strategy.botUrls);
   assert.deepEqual(entry.resources, {
     ...strategy.env.development,
     df: strategy.env.development.df,
@@ -30,6 +35,15 @@ test("parses new strategy resources and derives the short route name", () => {
   assert.deepEqual(entry.missingResources, []);
   assert.ok(isAccessible(entry));
   assert.equal(findStrategy([entry], "support_resistance"), entry);
+});
+
+test("defaults missing, malformed, or blank platform download URLs to empty strings", () => {
+  const [missing] = parseStrategyManifest(JSON.stringify([{ ...strategy, botUrls: undefined }]), "development");
+  const [malformed] = parseStrategyManifest(JSON.stringify([{ ...strategy, botUrls: [] }]), "development");
+  const [partial] = parseStrategyManifest(JSON.stringify([{ ...strategy, botUrls: { windows: "  ", mac: strategy.botUrls.mac } }]), "development");
+  assert.deepEqual(missing.botUrls, { windows: "", mac: "" });
+  assert.deepEqual(malformed.botUrls, { windows: "", mac: "" });
+  assert.deepEqual(partial.botUrls, { windows: "", mac: strategy.botUrls.mac });
 });
 
 test("requires a strategies/<name> identity and array CSV resources", () => {

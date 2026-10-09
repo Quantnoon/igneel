@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { fetchText } from "../api/fetch-resource.js";
 
-export function useResourceJson(path, parse, { allowMissing = false } = {}) {
+export function useResourceJson(path, parse, { allowMissing = false, fetcher = fetchText } = {}) {
   const [state, setState] = useState({ data: null, error: null, loading: true });
   const parserRef = useRef(parse);
   parserRef.current = parse;
@@ -13,7 +13,7 @@ export function useResourceJson(path, parse, { allowMissing = false } = {}) {
 
     async function load() {
       try {
-        const text = await fetchText(path, controller.signal);
+        const text = await fetcher(path, controller.signal);
         if (!active) return;
         const data = parserRef.current(text);
         setState({ data, error: null, loading: false });
@@ -32,7 +32,7 @@ export function useResourceJson(path, parse, { allowMissing = false } = {}) {
       active = false;
       controller.abort();
     };
-  }, [allowMissing, path]);
+  }, [allowMissing, fetcher, path]);
 
   return state;
 }

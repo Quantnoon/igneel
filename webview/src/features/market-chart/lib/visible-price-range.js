@@ -16,6 +16,8 @@ const SESSION_LEVEL_TYPES = new Set([
   "ASIAN_LOW",
 ]);
 
+const CONSOLIDATION_HOTSPOT_TYPE = "CONSOLIDATION_HOTSPOT";
+
 export const VISIBLE_PRICE_RANGE_PADDING = 0.05;
 
 export function priceZoneColumns(indicators) {
@@ -28,10 +30,15 @@ export function priceZoneColumns(indicators) {
 
 export function priceLevelColumns(indicators) {
   if (!Array.isArray(indicators)) return [];
-  return indicators
-    .filter((indicator) => PRICE_ZONE_TYPES.has(indicator?.type) || SESSION_LEVEL_TYPES.has(indicator?.type))
-    .flatMap((indicator) => Array.isArray(indicator.columns) ? indicator.columns : [])
-    .filter((column) => typeof column === "string");
+  return indicators.flatMap((indicator) => {
+    if (CONSOLIDATION_HOTSPOT_TYPE === indicator?.type) {
+      return (Array.isArray(indicator.columns) ? indicator.columns : [])
+        .filter((column) => typeof column === "string" && /^consolidation_(high|low)_/i.test(column));
+    }
+    if (!PRICE_ZONE_TYPES.has(indicator?.type) && !SESSION_LEVEL_TYPES.has(indicator?.type)) return [];
+    return (Array.isArray(indicator.columns) ? indicator.columns : [])
+      .filter((column) => typeof column === "string");
+  });
 }
 
 export function visibleRecordIndexes(recordCount, categoryCount, zoomStart, zoomEnd) {

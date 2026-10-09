@@ -1,4 +1,4 @@
-from backtest.backtest_strategies import sr_entry, sr_exit, session_breakout_entry, session_breakout_exit
+from backtest.backtest_strategies import sr_entry, sr_exit, consolidation_entry, consolidation_exit
 from dotenv import load_dotenv
 from pathlib import Path
 import os
@@ -13,24 +13,6 @@ backtest_auth = {
 }
 
 _indicators = [
-    #     {
-    #     "indicator": "SUPPLY_ZONE",
-    #     "timeframe": "H1",
-    #     "params": {
-    #         "sd_lookback_hours": 5,
-    #     }
-    # },
-    # {
-    #     "indicator": "DEMAND_ZONE",
-    #     "timeframe": "H1",
-    #     "params": {
-    #         "sd_lookback_hours": 5,
-    #     }
-    # },
-    {
-        "indicator": "COMBINED_TREND",
-        "timeframe": "M15"
-    },
     {
         "indicator": "RESISTANCE_ZONE",
         "timeframe": "H4",
@@ -45,84 +27,32 @@ _indicators = [
             "sr_lookback_hours": 5,
         }
     },
-    # {
-    # "indicator": "VOLATILITY_REGIME",
-    # "timeframe": "H1",
-    # "params": {
-    #         "regime_lookback": 5
-    #     }
-    # },
-    # {
-    #      "indicator": "BULLISH_FVG",
-    #      "timeframe": "H1",
-    # },
-    # {
-    #      "indicator": "BEARISH_FVG",
-    #      "timeframe": "H1",
-    # },
-    # {"indicator": "BBANDS", "timeframe": "H1"},
-    # {"indicator": "EMA", "timeframe": "H1", "params": {"timeperiod": 14}, "outputs": ["ema_14"]},
-    # {"indicator": "EMA", "timeframe": "H1", "params": {"timeperiod": 50}, "outputs": ["ema_50"]},
-    # {"indicator": "SMA", "timeframe": "H1", "params": {"timeperiod": 12}, "outputs": ["sma_12"]},
-    # {"indicator": "SMA", "timeframe": "H1", "params": {"timeperiod": 50}, "outputs": ["sma_50"]},
-    # ─────────────────────────────────────────────
-    # CANDLESTICK PATTERNS
-    # ─────────────────────────────────────────────,
+    {
+    "indicator": "VOLATILITY_REGIME",
+    "timeframe": "M15",
+    "params": {
+            "regime_lookback": 5
+        }
+    },
+    {
+        "indicator": "ATR",
+        "timeframe": "M15",
+    }
 ]
 
 strategies = [
-    {
-        "symbols": ["EURUSDc", "GBPUSDc", "USDCADc", "AUDUSDc"],
-        "name": "support_resistance",
-        "indicators": _indicators,
-        "timeframes": ["H4", "M15"],
-        "date_range": "1M",
-        "strategy": ("support_resistance", sr_entry, sr_exit),
-        "config": {
-            "default_config": {
-                "sl_type": "atr",
-                "atr_multiplier": 4,
-                "rrr": 2,
-                "entry_tf": "M15",
-                "slippage": 2.5
-            },
-            "risk_config": {
-                "starting_balance":      10,
-                "currency":              "USD",   # or "NGN"
-                "ngn_conversion_rate":   1450,
-                "lot_size":              0.01,
-                "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
-                "daily_dd": 0.05, # in percentage
-                "maximum_dd": 0.7, # in percentage
-                "trading_days": [], # [] = all trading days
-            }
-        }
-    },
     # {
-    #     "symbols": ["EURUSDc", "GBPUSDc", "USDJPYc", "USDCADc", "AUDUSDc"],
-    #     "name": "sessions_breakout",
-    #     "indicators": [
-    #         # {"indicator": "EMA", "timeframe": "H4", "params": {"timeperiod": 50}, "outputs": ["ema_50"]},
-    #         # {"indicator": "CDLENGULFING", "timeframe": "M15"},
-    #         # {"indicator": "CDLHAMMER", "timeframe": "M15"},
-    #         # {"indicator": "CDLINVERTEDHAMMER", "timeframe": "M15"},
-    #         # {"indicator": "CDLMORNINGSTAR", "timeframe": "M15"},
-    #         # {"indicator": "CDLEVENINGSTAR", "timeframe": "M15"},
-    #         {"indicator": "LONDON_HIGH", "timeframe": "M15"},
-    #         {"indicator": "LONDON_LOW", "timeframe": "M15"},
-    #         {"indicator": "NEWYORK_HIGH", "timeframe": "M15"},
-    #         {"indicator": "NEWYORK_LOW", "timeframe": "M15"},
-    #         {"indicator": "ASIAN_HIGH", "timeframe": "M15"},
-    #         {"indicator": "ASIAN_LOW", "timeframe": "M15"},
-    #     ],
-    #     "timeframes": ["M15"],
-    #     "date_range": "2M",
-    #     "strategy": ("sessions_breakout", session_breakout_entry, session_breakout_exit),
+    #     "symbols": ["EURUSD", "GBPUSD", "USDCAD", "USDJPY"],
+    #     "name": "support_resistance",
+    #     "indicators": _indicators,
+    #     "timeframes": ["H4", "M15"],
+    #     "date_range": "8M",
+    #     "strategy": ("support_resistance", sr_entry, sr_exit),
     #     "config": {
     #         "default_config": {
     #             "sl_type": "custom",
-    #             "atr_multiplier": 2.5,
-    #             "rrr": 2,
+    #             "atr_multiplier": 4,
+    #             "rrr": 3,
     #             "entry_tf": "M15",
     #             "slippage": 2.5
     #         },
@@ -137,5 +67,41 @@ strategies = [
     #             "trading_days": [], # [] = all trading days
     #         }
     #     }
-    # }
+    # },
+    {
+        "symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD"],
+        "name": "market_consolidation",
+        "indicators": [
+            {
+                "indicator": "CONSOLIDATION_HOTSPOT",
+                "timeframe": "H1"
+            },
+            {
+                "indicator": "COMBINED_TREND",
+                "timeframe": "H1"
+            }
+        ],
+        "timeframes": ["H1"],
+        "date_range": "1M",
+        "strategy": ("consolidation", consolidation_entry, consolidation_exit),
+        "config": {
+            "default_config": {
+                "sl_type": "atr",
+                "atr_multiplier": 2,
+                "rrr": 3,
+                "entry_tf": "H1",
+                "slippage": 2.5
+            },
+            "risk_config": {
+                "starting_balance":      10,
+                "currency":              "USD",   # or "NGN"
+                "ngn_conversion_rate":   1450,
+                "lot_size":              0.02,
+                "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
+                "daily_dd": 0.05, # in percentage
+                "maximum_dd": 0.7, # in percentage
+                "trading_days": [], # [] = all trading days
+            }
+        }
+    }
 ]

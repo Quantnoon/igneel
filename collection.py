@@ -11,6 +11,9 @@ class PriceDataCollection:
     def get_price_data(self, symbol):
         return self._price_data.get_merged_price(symbol)
 
+    def get_symbols(self, symbols):
+        return self._price_data.get_symbols(symbols)
+
     def get_symbol_info(self, symbol):
         return self._price_data.get_symbol_info(symbol)
 

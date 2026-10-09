@@ -1,6 +1,7 @@
 import questionary
 import sys
 import math
+import json
 from pathlib import Path
 
 if __package__ in {None, ""}:
@@ -14,14 +15,6 @@ from agent.agent_backend import shutdown_sandbox
 
 sys.stdout.reconfigure(encoding="utf-8")
 
-STRATEGIES = {
-    "SAM Strategy": "sma",
-    "Trendline Strategy": "trendline",
-    "doji Candlestick Strategy": "doji-candlestick-strategy",
-    "liquidity Sweep": "liquidity-sweep"
-}
-
-
 def main():
     identifier = questionary.text(
         "Enter your unique identifier:",
@@ -29,15 +22,26 @@ def main():
     ).ask()
 
     symbol = questionary.text(
-        "Select symbol:"
+        "Select symbol:",
+        default="Volatility 10 Index"
     ).ask()
 
-    strategy_name = questionary.select(
-        "Select strategy:",
-        choices=list(STRATEGIES.keys()),
+    goal = questionary.text(
+        "Enter the trading goal/task:",
+        default="double the account balance",
+        validate=lambda value: (
+            True if is_valid_goal(value) else "Enter a non-empty trading goal"
+        ),
     ).ask()
 
-    strategy_key = STRATEGIES[strategy_name]
+    resources_text = questionary.text(
+        "Enter resources as a JSON array (text and/or URLs):",
+        default='["Scalp in lower timeframes"]',
+        validate=lambda value: (
+            True if is_valid_resources(value) else "Enter a JSON array of non-empty strings"
+        ),
+    ).ask()
+    resources = parse_resources(resources_text)
 
     lot_size_text = questionary.text(
         "Enter lot size:",
@@ -52,16 +56,17 @@ def main():
     config = {
         "identifier": identifier,
         "symbol": symbol,
-        "strategy": strategy_key,
+        "goal": goal.strip(),
         "lot_size": lot_size,
+        "resources": resources,
     }
 
     print("\nConfiguration")
     print(f"Identifier: {config['identifier']}")
     print(f"Symbol:     {config['symbol']}")
-    print(f"Strategy:   {strategy_name}")
-    print(f"Key:        {config['strategy']}")
+    print(f"Goal:       {config['goal']}")
     print(f"Lot size:   {config['lot_size']}")
+    print(f"Resources:  {len(config['resources'])}")
 
     start = questionary.confirm(
         "Start trading?",
@@ -78,8 +83,9 @@ def main():
                 run_trader(
                     id=identifier,
                     symbol=symbol,
-                    strategy=strategy_key,
+                    goal=config["goal"],
                     lot_size=config["lot_size"],
+                    resources=config["resources"],
                 )
             )
         except Exception as e:
@@ -97,6 +103,35 @@ def is_valid_lot_size(value):
         return math.isfinite(lot_size) and lot_size > 0
     except (TypeError, ValueError):
         return False
+
+
+def is_valid_goal(value):
+    return isinstance(value, str) and bool(value.strip())
+
+
+def parse_resources(value):
+    try:
+        resources = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("resources must be a JSON array of non-empty strings") from exc
+
+    if not isinstance(resources, list):
+        raise ValueError("resources must be a JSON array of non-empty strings")
+
+    normalized = []
+    for resource in resources:
+        if not isinstance(resource, str) or not (cleaned := resource.strip()):
+            raise ValueError("resources must be a JSON array of non-empty strings")
+        normalized.append(cleaned)
+    return normalized
+
+
+def is_valid_resources(value):
+    try:
+        parse_resources(value)
+    except ValueError:
+        return False
+    return True
 
 
 if __name__ == "__main__":

@@ -48,6 +48,12 @@ def _default_outputs(indicator_type):
         "RESISTANCE_ZONE": ["resistance_low", "resistance_high"],
         "BULLISH_FVG": ["bullish_fvg_low", "bullish_fvg_high"],
         "BEARISH_FVG": ["bearish_fvg_low", "bearish_fvg_high"],
+        "CONSOLIDATION_HOTSPOT": [
+            "consolidation",
+            "consolidation_id",
+            "consolidation_high",
+            "consolidation_low",
+        ],
     }
     if indicator_type in outputs:
         return outputs[indicator_type]

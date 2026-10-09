@@ -12,7 +12,6 @@ from agent.agent_tools import (
     get_open_trades,
     wait_for_market_update,
 )
-from agent.paths import SKILLS_ROOT
 
 
 # ============================================================
@@ -21,8 +20,9 @@ from agent.paths import SKILLS_ROOT
 
 class TradingState(TypedDict, total=False):
     symbol: str
-    strategy: str
-    strategy_request: str
+    goal: str
+    resources: list[str]
+    research_context: str
 
     # Market analysis
     market_analysis: str
@@ -37,6 +37,9 @@ class TradingState(TypedDict, total=False):
         "NO_TRADE",
     ]
     decision_output: str
+    stop_method: str
+    risk_distance: float
+    risk_reward_ratio: float
 
     # Order manager
     order_output: str
@@ -53,31 +56,24 @@ class TradingState(TypedDict, total=False):
 # HELPERS
 # ============================================================
 
-_STRATEGY_SLUG = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
-_STRATEGIES_ROOT = (SKILLS_ROOT / "strategies").resolve()
+def validate_goal(value: object) -> str:
+    """Return a required, normalized trading goal."""
+
+    if not isinstance(value, str) or not (goal := value.strip()):
+        raise ValueError("goal must be a non-empty trading task.")
+    return goal
 
 
-def resolve_strategy_skill(strategy: object) -> tuple[str, str]:
-    """Return the validated strategy identifier and its sandbox skill path."""
+def extract_research_context(analysis: str, previous: str = "") -> str:
+    """Keep Atlas's run-scoped approach brief between analysis cycles."""
 
-    if not isinstance(strategy, str) or not strategy:
-        raise ValueError(
-            "strategy must be a non-empty strategy directory name."
-        )
-
-    if not _STRATEGY_SLUG.fullmatch(strategy):
-        raise ValueError(
-            "strategy must contain only lowercase letters, digits, and hyphens."
-        )
-
-    skill_file = (_STRATEGIES_ROOT / strategy / "SKILL.md").resolve()
-    if skill_file.parent.parent != _STRATEGIES_ROOT or not skill_file.is_file():
-        raise ValueError(
-            f"Unknown strategy '{strategy}'. Expected "
-            "agent/skills/strategies/<strategy>/SKILL.md."
-        )
-
-    return strategy, f"/skills/strategies/{strategy}/SKILL.md"
+    match = re.search(
+        r"(?:^|\n)RESEARCH CONTEXT:\s*(.*?)(?=\nMARKET CONDITION:|\Z)",
+        analysis,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    context = match.group(1).strip() if match else ""
+    return context or previous
 
 def get_last_message_content(result) -> str:
     """
@@ -263,8 +259,9 @@ async def market_analysis_node(
     """
 
     symbol = state["symbol"]
-    strategy, strategy_skill_path = resolve_strategy_skill(state.get("strategy"))
-    request = state.get("strategy_request", "")
+    goal = validate_goal(state.get("goal"))
+    research_context = state.get("research_context", "")
+    resources = state.get("resources", [])
 
     print(
         f"\n\n[GRAPH] ATLAS: "
@@ -282,21 +279,19 @@ Analyze the current market.
 Symbol:
 {symbol}
 
-Trading objective:
-{request}
+Goal:
+{goal}
 
-Active strategy:
-{strategy}
+Persisted research context from prior cycles:
+{research_context or "None. Research and select an approach for this run."}
 
-Strategy skill path:
-{strategy_skill_path}
+User-provided resources (text or URLs):
+{resources or "None."}
 
 There are currently no open trades requiring management.
 
-Read the specified strategy skill before retrieving market data. Use only that
-strategy's rules; do not read or combine rules from other strategy skills.
-
-Return your current technical market analysis.
+Use the persisted approach unless its documented invalidation applies. Return
+your current technical market analysis with a RESEARCH CONTEXT section.
 """,
                 }
             ]
@@ -315,13 +310,13 @@ Return your current technical market analysis.
 
     return {
         "market_analysis": analysis,
+        "research_context": extract_research_context(analysis, research_context),
     }
 
 
 # ============================================================
 # TRADE DECISION
 # ============================================================
-import re
 import math
 from typing import Any
 
@@ -337,6 +332,21 @@ def validate_lot_size(value: object) -> float:
         raise ValueError("lot_size must be a positive finite number.")
 
     return lot_size
+
+
+class RecoverableEntryPriceError(RuntimeError):
+    """A directional Acnologia response omitted or invalidated ENTRY PRICE."""
+
+
+class RecoverableDirectionalDecisionError(RuntimeError):
+    """A qualifying Atlas direction was not honored by Acnologia."""
+
+
+EMERGENCY_NO_TRADE_REASON_CODES = {
+    "MARKET_DATA_UNAVAILABLE",
+    "BROKER_SPECIFICATION_UNAVAILABLE",
+    "EXECUTION_LEVELS_INVALID",
+}
 
 
 def parse_acnologia_decision(
@@ -357,10 +367,19 @@ def parse_acnologia_decision(
     ENTRY PRICE:
     <number> | NONE
 
+    STOP METHOD:
+    ATR | SWING | FIXED_POINTS | NONE
+
     STOP LOSS:
     <number> | NONE
 
     TAKE PROFIT:
+    <number> | NONE
+
+    RISK DISTANCE:
+    <number> | NONE
+
+    RISK REWARD RATIO:
     <number> | NONE
 
     LOT SIZE:
@@ -389,6 +408,26 @@ def parse_acnologia_decision(
         )
 
     decision = decision_match.group(1).upper()
+
+    # A directional response without a usable entry reference can be retried
+    # once. Validate it before other required fields so the caller can
+    # distinguish this recoverable contract error from malformed responses.
+    if decision in {"LONG", "SHORT"}:
+        entry_match = re.search(
+            r"\bENTRY\s+PRICE\s*:\s*([^\r\n]*)",
+            text,
+            flags=re.IGNORECASE,
+        )
+        entry_value = entry_match.group(1).strip() if entry_match else ""
+        if (
+            not entry_value
+            or entry_value.upper() == "NONE"
+            or not re.fullmatch(r"-?\d+(?:\.\d+)?", entry_value)
+        ):
+            raise RecoverableEntryPriceError(
+                f"{decision} requires a numeric ENTRY PRICE from the latest "
+                "completed entry-timeframe close."
+            )
 
     # -----------------------------
     # Confidence
@@ -438,7 +477,29 @@ def parse_acnologia_decision(
     entry_price = parse_number("ENTRY PRICE")
     stop_loss = parse_number("STOP LOSS")
     take_profit = parse_number("TAKE PROFIT")
+    risk_distance = parse_number("RISK DISTANCE")
+    risk_reward_ratio = parse_number("RISK REWARD RATIO")
     reported_lot_size = parse_number("LOT SIZE")
+
+    no_trade_reason_match = re.search(
+        r"\bNO_TRADE\s+REASON\s+CODE\s*:\s*([^\r\n]*)",
+        text,
+        flags=re.IGNORECASE,
+    )
+    no_trade_reason_code = (
+        no_trade_reason_match.group(1).strip().upper()
+        if no_trade_reason_match
+        else None
+    )
+
+    stop_method_match = re.search(
+        r"\bSTOP\s+METHOD\s*:\s*(ATR|SWING|FIXED_POINTS|NONE)\b",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not stop_method_match:
+        raise RuntimeError(f"Acnologia did not return STOP METHOD.\n\n{text}")
+    stop_method = stop_method_match.group(1).upper()
 
     wait_timeframe_match = re.search(
         r"\bWAIT\s+TIMEFRAME\s*:\s*([A-Z0-9]+)\b",
@@ -478,6 +539,15 @@ def parse_acnologia_decision(
                 f"{decision} requires LOT SIZE."
             )
 
+        if stop_method == "NONE":
+            raise RuntimeError(f"{decision} requires STOP METHOD.")
+
+        if risk_distance is None or not math.isfinite(risk_distance) or risk_distance <= 0:
+            raise RuntimeError(f"{decision} requires a positive RISK DISTANCE.")
+
+        if risk_reward_ratio is None or not math.isfinite(risk_reward_ratio) or risk_reward_ratio <= 0:
+            raise RuntimeError(f"{decision} requires a positive RISK REWARD RATIO.")
+
         if not math.isclose(
             reported_lot_size,
             expected_lot_size,
@@ -487,10 +557,14 @@ def parse_acnologia_decision(
             raise RuntimeError(
                 "Acnologia returned a LOT SIZE that does not match the runtime lot_size."
             )
-    elif reported_lot_size is not None:
-        raise RuntimeError(
-            f"{decision} requires LOT SIZE: NONE."
-        )
+    else:
+        # WAIT and NO_TRADE never reach order execution.  A model may echo the
+        # supplied runtime lot size despite the output contract; normalize that
+        # harmless formatting error instead of stopping the trading loop.
+        reported_lot_size = None
+        stop_method = "NONE"
+        risk_distance = None
+        risk_reward_ratio = None
 
     # LONG:
     # SL < ENTRY < TP
@@ -516,15 +590,73 @@ def parse_acnologia_decision(
                 f"SL={stop_loss}"
             )
 
+    if decision in {"LONG", "SHORT"}:
+        actual_risk = abs(entry_price - stop_loss)
+        actual_reward = abs(take_profit - entry_price)
+        if not math.isclose(actual_risk, risk_distance, rel_tol=1e-6, abs_tol=1e-10):
+            raise RuntimeError("RISK DISTANCE does not match the entry-to-stop distance.")
+        if not math.isclose(actual_reward, risk_distance * risk_reward_ratio, rel_tol=1e-6, abs_tol=1e-8):
+            raise RuntimeError("TAKE PROFIT does not match RISK DISTANCE multiplied by RISK REWARD RATIO.")
+
     return {
         "decision": decision,
         "confidence": confidence,
         "entry_price": entry_price,
         "stop_loss": stop_loss,
         "take_profit": take_profit,
-        "lot_size": expected_lot_size,
+        "lot_size": expected_lot_size if decision in {"LONG", "SHORT"} else None,
+        "stop_method": stop_method,
+        "risk_distance": risk_distance,
+        "risk_reward_ratio": risk_reward_ratio,
         "wait_timeframe": wait_timeframe,
+        "no_trade_reason_code": no_trade_reason_code,
     }
+
+
+def get_qualifying_direction(analysis: str) -> str | None:
+    """Return the required direction when Atlas provides a qualifying signal."""
+
+    bias_match = re.search(r"\bDIRECTIONAL\s+BIAS\s*:\s*(BULLISH|BEARISH|NEUTRAL|MIXED)\b", analysis, flags=re.IGNORECASE)
+    confidence_match = re.search(r"\bCONFIDENCE\s*:\s*(HIGH|MODERATE|LOW)\b", analysis, flags=re.IGNORECASE)
+    if not bias_match or not confidence_match:
+        return None
+
+    bias = bias_match.group(1).upper()
+    confidence = confidence_match.group(1).upper()
+    if bias == "BULLISH" and confidence in {"MODERATE", "HIGH"}:
+        return "LONG"
+    if bias == "BEARISH" and confidence in {"MODERATE", "HIGH"}:
+        return "SHORT"
+    return None
+
+
+def validate_decision_matches_atlas(
+    analysis: str,
+    decision: str,
+    no_trade_reason_code: str | None = None,
+) -> None:
+    """Reject WAIT or an opposite side when Atlas supplied a qualifying bias."""
+    bias_match = re.search(r"\bDIRECTIONAL\s+BIAS\s*:\s*(BULLISH|BEARISH|NEUTRAL|MIXED)\b", analysis, flags=re.IGNORECASE)
+    confidence_match = re.search(r"\bCONFIDENCE\s*:\s*(HIGH|MODERATE|LOW)\b", analysis, flags=re.IGNORECASE)
+    if not bias_match or not confidence_match:
+        return
+
+    bias = bias_match.group(1).upper()
+    confidence = confidence_match.group(1).upper()
+    qualifying_direction = get_qualifying_direction(analysis)
+    if qualifying_direction and decision == qualifying_direction:
+        return
+    if qualifying_direction and decision == "NO_TRADE" and no_trade_reason_code in EMERGENCY_NO_TRADE_REASON_CODES:
+        return
+    if qualifying_direction:
+        raise RecoverableDirectionalDecisionError(
+            f"Qualifying Atlas {bias}/{confidence} analysis requires "
+            f"{qualifying_direction} with valid levels, or NO_TRADE with one "
+            f"of {sorted(EMERGENCY_NO_TRADE_REASON_CODES)}, not {decision} "
+            f"with {no_trade_reason_code or 'no'} reason code."
+        )
+    if qualifying_direction is None and decision != "WAIT":
+        raise RuntimeError(f"Atlas {bias}/{confidence} analysis requires WAIT, not {decision}.")
 
 
 async def trade_decision_node(state: TradingState):
@@ -540,17 +672,20 @@ async def trade_decision_node(state: TradingState):
     """
 
     analysis = state["market_analysis"]
+    goal = validate_goal(state.get("goal"))
+    research_context = state.get("research_context", "")
     lot_size = validate_lot_size(state.get("lot_size"))
 
     print("\n\n[GRAPH] ACNOLOGIA")
 
-    result = await acnologia_agent.ainvoke(
-        {
-            "messages": [
-                {
-                    "role": "user",
-                    "content": f"""
+    decision_request = f"""
 Evaluate the following market analysis and make the final trade decision.
+
+Goal:
+{goal}
+
+Active research context:
+{research_context or "Unavailable; rely on Atlas's report."}
 
 LOT SIZE:
 {lot_size}
@@ -561,15 +696,48 @@ Do not calculate or modify it.
 Market analysis:
 
 {analysis}
-""",
-                }
-            ]
-        }
+"""
+    result = await acnologia_agent.ainvoke(
+        {"messages": [{"role": "user", "content": decision_request}]}
     )
 
     output = get_last_message_content(result)
+    try:
+        trade = parse_acnologia_decision(output, lot_size)
+        validate_decision_matches_atlas(
+            analysis,
+            trade["decision"],
+            trade["no_trade_reason_code"],
+        )
+    except (RecoverableEntryPriceError, RecoverableDirectionalDecisionError) as first_error:
+        required_direction = get_qualifying_direction(analysis)
+        correction_request = f"""{decision_request}
 
-    trade = parse_acnologia_decision(output, lot_size)
+CORRECTION REQUIRED:
+{first_error}
+Return the complete required decision format again. The required Atlas direction
+is {required_direction or 'not available'}. For LONG or SHORT, ENTRY PRICE must
+be the latest finite close of the most recently completed candle on the active
+TIMEFRAME PLAN's entry timeframe. A qualifying signal may return NO_TRADE only
+with NO_TRADE REASON CODE: MARKET_DATA_UNAVAILABLE,
+BROKER_SPECIFICATION_UNAVAILABLE, or EXECUTION_LEVELS_INVALID.
+"""
+        retry_result = await acnologia_agent.ainvoke(
+            {"messages": [{"role": "user", "content": correction_request}]}
+        )
+        output = get_last_message_content(retry_result)
+        try:
+            trade = parse_acnologia_decision(output, lot_size)
+            validate_decision_matches_atlas(
+                analysis,
+                trade["decision"],
+                trade["no_trade_reason_code"],
+            )
+        except (RecoverableEntryPriceError, RecoverableDirectionalDecisionError) as retry_error:
+            raise RuntimeError(
+                "Acnologia failed to honor the qualifying Atlas direction after "
+                f"one correction: {retry_error}"
+            ) from retry_error
 
     print(f"\n[ACNOLOGIA DECISION: {trade['decision']}]")
     print(f"[CONFIDENCE: {trade['confidence']}]")
@@ -577,6 +745,9 @@ Market analysis:
     print(f"[STOP LOSS: {trade['stop_loss']}]")
     print(f"[TAKE PROFIT: {trade['take_profit']}]")
     print(f"[LOT SIZE: {trade['lot_size']}]")
+    print(f"[STOP METHOD: {trade['stop_method']}]")
+    print(f"[RISK DISTANCE: {trade['risk_distance']}]")
+    print(f"[RISK REWARD RATIO: {trade['risk_reward_ratio']}]")
     print(f"[WAIT TIMEFRAME: {trade['wait_timeframe']}]")
 
     print(output)
@@ -588,6 +759,9 @@ Market analysis:
         "stop_loss": trade["stop_loss"],
         "take_profit": trade["take_profit"],
         "lot_size": lot_size,
+        "stop_method": trade["stop_method"],
+        "risk_distance": trade["risk_distance"],
+        "risk_reward_ratio": trade["risk_reward_ratio"],
         "wait_timeframe": trade["wait_timeframe"],
         "decision_output": output,
     }
@@ -643,6 +817,9 @@ async def order_manager_node(
     """
 
     symbol = state["symbol"]
+    goal = validate_goal(state.get("goal"))
+    research_context = state.get("research_context", "")
+    resources = state.get("resources", [])
 
     open_trades_exist = state.get(
         "open_trades_exist",
@@ -675,6 +852,15 @@ Manage the existing open trade or trades.
 
 Symbol:
 {symbol}
+
+Goal:
+{goal}
+
+Active research context to pass to Grandine:
+{research_context or "Unavailable"}
+
+User-provided resources for Grandine:
+{resources or "None."}
 
 Trades detected by the graph:
 
@@ -780,6 +966,12 @@ Handle this approved trading opportunity.
 
 Symbol:
 {symbol}
+
+Goal:
+{goal}
+
+Active research context:
+{research_context or "Unavailable"}
 
 Decision:
 {decision}

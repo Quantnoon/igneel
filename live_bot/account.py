@@ -1,11 +1,12 @@
 from database import Database
 import MetaTrader5 as mt5
 import datetime
+from live_bot.live_config import active_config
 
 class Account:
     _db = None
     def __init__(self):
-        self._db = Database()
+        self._db = Database(active_config["name"])
 
     def __exit__(self, exc_type, exc, tb):
         self._db.close()

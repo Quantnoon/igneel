@@ -70,9 +70,16 @@ export function parseStrategyManifest(text, env) {
       config: typeof activeResources?.config === "string" ? activeResources.config.trim() : "",
       result: typeof activeResources?.result === "string" ? activeResources.result.trim() : "",
     };
+    const botUrls = entry.botUrls && typeof entry.botUrls === "object" && !Array.isArray(entry.botUrls)
+      ? entry.botUrls
+      : {};
     return {
       name: routeName,
       resourceIdentity: name,
+      botUrls: {
+        windows: typeof botUrls.windows === "string" ? botUrls.windows.trim() : "",
+        mac: typeof botUrls.mac === "string" ? botUrls.mac.trim() : "",
+      },
       env,
       resources,
       missingResources: missingResourceFields(activeResources),

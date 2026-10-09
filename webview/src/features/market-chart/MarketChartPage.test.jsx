@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, test, vi } from "vitest";
 
-const { chart, chartApi, zoomHandlers, QFChart } = vi.hoisted(() => {
+const { chart, chartApi, chartDrawings, zoomHandlers, QFChart } = vi.hoisted(() => {
   const handlers = new Set();
+  const drawings = new Map();
   const api = {
     getOption: vi.fn(() => ({
       dataZoom: [{ type: "inside", start: 0, end: 100 }],
@@ -14,11 +16,15 @@ const { chart, chartApi, zoomHandlers, QFChart } = vi.hoisted(() => {
       ],
     })),
     setOption: vi.fn(),
+    dispatchAction: vi.fn(),
   };
   const chartHost = {
-    addDrawing: vi.fn(),
+    addDrawing: vi.fn((drawing) => drawings.set(drawing.id, drawing)),
     addIndicator: vi.fn(),
     destroy: vi.fn(),
+    getDrawing: vi.fn((id) => drawings.get(id)),
+    removeDrawing: vi.fn((id) => drawings.delete(id)),
+    removeIndicator: vi.fn(),
     registerDrawingRenderer: vi.fn(),
     resize: vi.fn(),
     setMarketData: vi.fn(),
@@ -31,6 +37,7 @@ const { chart, chartApi, zoomHandlers, QFChart } = vi.hoisted(() => {
   return {
     chart: chartHost,
     chartApi: api,
+    chartDrawings: drawings,
     zoomHandlers: handlers,
     QFChart: vi.fn(function QFChartMock() { return chartHost; }),
   };
@@ -39,6 +46,9 @@ const { chart, chartApi, zoomHandlers, QFChart } = vi.hoisted(() => {
 vi.mock("@qfo/qfchart", () => ({ QFChart }));
 
 import { MarketChartPage, qfChartOptions } from "./MarketChartPage.jsx";
+import { clearCsvDatasetCache } from "../../shared/api/fetch-csv-chunks.js";
+import { clearCachedText } from "../../shared/api/fetch-cached-text.js";
+import { CONSOLIDATION_HOTSPOT_DRAWING_ID } from "./lib/consolidation-hotspots.js";
 import { SESSION_BOUNDARY_DRAWING_ID } from "./lib/session-boundaries.js";
 
 const config = {
@@ -65,7 +75,10 @@ let mediaMatches = false;
 let mediaChangeListener;
 
 beforeEach(() => {
+  clearCsvDatasetCache();
+  clearCachedText();
   vi.clearAllMocks();
+  chartDrawings.clear();
   zoomHandlers.clear();
   ResizeObserverMock.instances = [];
   globalThis.ResizeObserver = ResizeObserverMock;
@@ -92,6 +105,7 @@ test("creates a QFChart with market data, filled-zone indicators, and result tra
   render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
 
   await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
+  await waitFor(() => assert.equal(chartApi.setOption.mock.calls.length, 3));
   const [, options] = QFChart.mock.calls[0];
   assert.equal(options.backgroundColor, "#0a0a0a");
   assert.equal(options.height, "100%");
@@ -101,23 +115,169 @@ test("creates a QFChart with market data, filled-zone indicators, and result tra
   assert.equal(chart.addIndicator.mock.calls[0][1]["support-zone-fill"].options.style, "fill");
   assert.deepEqual(
     chart.registerDrawingRenderer.mock.calls.map(([renderer]) => renderer.type),
-    ["backtest-trades", SESSION_BOUNDARY_DRAWING_ID],
+    ["backtest-trades", SESSION_BOUNDARY_DRAWING_ID, CONSOLIDATION_HOTSPOT_DRAWING_ID],
   );
-  assert.equal(chart.addDrawing.mock.calls.length, 1);
-  assert.equal(chart.addDrawing.mock.calls[0][0].points.length, 2);
+  assert.equal(chart.addDrawing.mock.calls.length, 2);
+  assert.equal(new Set(chart.addDrawing.mock.calls.map(([drawing]) => drawing.id)).size, 2);
+  const tradeDrawing = chart.addDrawing.mock.calls.map(([drawing]) => drawing).find((drawing) => drawing.id === "backtest-trades");
+  assert.equal(tradeDrawing.points.length, 2);
   assert.deepEqual(chartApi.setOption.mock.calls[0][0], {
     series: [
       { name: "support-zone::support-zone-low", type: "custom", color: "#43A047" },
       { name: "support-zone::support-zone-high", type: "custom", color: "#43A047" },
     ],
   });
-  assert.deepEqual(chartApi.setOption.mock.calls[1][0], { yAxis: [{ min: 88.9, max: 113.1 }] });
+  assert.deepEqual(chartApi.setOption.mock.calls[2][0], { yAxis: [{ min: 88.9, max: 113.1 }] });
   assert.ok(chart.events.on.mock.calls.some(([event]) => event === "chart:updated"));
   assert.equal(ResizeObserverMock.instances[0].observe.mock.calls.length, 1);
 
   zoomHandlers.forEach((handler) => handler());
-  assert.equal(chartApi.setOption.mock.calls.length, 3);
-  assert.deepEqual(chartApi.setOption.mock.calls[2][0], { yAxis: [{ min: 88.9, max: 113.1 }] });
+  assert.equal(chartApi.setOption.mock.calls.length, 4);
+  assert.deepEqual(chartApi.setOption.mock.calls[3][0], { yAxis: [{ min: 88.9, max: 113.1 }] });
+});
+
+test("shows the full chart skeleton while the selected symbol makes its first load", () => {
+  render(<MarketChartPage
+    active
+    config={config}
+    symbol="Volatility 25 Index"
+    symbols={["Volatility 25 Index", "EURUSD"]}
+    pendingSymbol="EURUSD"
+    symbolMenuOpen
+    onSymbolChange={() => {}}
+    onSymbolMenuOpenChange={() => {}}
+    dfPath="df.csv"
+    resultPath="result.json"
+  />);
+  assert.ok(screen.getByRole("status", { name: "Loading chart" }));
+  assert.equal(screen.getByTestId("market-chart-skeleton") !== null, true);
+  assert.ok(screen.getByRole("combobox", { name: "Chart symbol" }));
+  assert.ok(screen.getByTestId("symbol-activation-spinner"));
+});
+
+test("keeps visited symbol charts mounted and reuses their data and local chart state", async () => {
+  function ChartPool({ selected }) {
+    return ["EURUSD", "GBPUSD"].map((symbol) => (
+      <MarketChartPage
+        key={symbol}
+        active={selected === symbol}
+        visible={selected === symbol}
+        config={{ ...config, symbol }}
+        symbol={symbol}
+        symbols={["EURUSD", "GBPUSD"]}
+        onSymbolChange={() => {}}
+        dfPath={`df-${symbol}.csv`}
+        resultPath="shared-result.json"
+      />
+    ));
+  }
+
+  globalThis.fetch = vi.fn((url) => {
+    const path = String(url);
+    const body = path.startsWith("df-") ? csv : results;
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(body) });
+  });
+  const view = render(<ChartPool selected="EURUSD" />);
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
+  fireEvent.click(screen.getByRole("button", { name: /Support Zone/ }));
+  assert.equal(screen.getByRole("button", { name: /Support Zone/ }).getAttribute("aria-pressed"), "false");
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df-EURUSD.csv")).length, 1);
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("shared-result.json")).length, 1);
+
+  view.rerender(<ChartPool selected="GBPUSD" />);
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 2));
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df-GBPUSD.csv")).length, 1);
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("shared-result.json")).length, 1);
+
+  view.rerender(<ChartPool selected="EURUSD" />);
+  assert.equal(QFChart.mock.calls.length, 2, "returning to EURUSD reuses its QFChart instance");
+  assert.equal(chart.destroy.mock.calls.length, 0, "switching symbols does not destroy either chart");
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df-EURUSD.csv")).length, 1);
+  assert.equal(screen.getByRole("button", { name: /Support Zone/ }).getAttribute("aria-pressed"), "false");
+});
+
+test("shows an error and retries a failed first CSV load", async () => {
+  let dfRequestCount = 0;
+  const onChartActivationError = vi.fn();
+  globalThis.fetch = vi.fn((url) => {
+    if (String(url).startsWith("df.csv")) {
+      dfRequestCount += 1;
+      if (dfRequestCount === 1) return Promise.resolve({ ok: false, status: 503, text: () => Promise.resolve("Unavailable") });
+    }
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(String(url).startsWith("df.csv") ? csv : results) });
+  });
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" onChartActivationError={onChartActivationError} />);
+  assert.ok(screen.getByRole("status", { name: "Loading chart" }));
+  await screen.findByRole("alert");
+  assert.deepEqual(onChartActivationError.mock.calls, [["Volatility 25 Index"]]);
+  assert.ok(screen.getByRole("button", { name: "Retry" }));
+  fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
+  assert.equal(dfRequestCount, 2);
+});
+
+test("loads the newest 1,000-row chunk first, prepends older cached rows and preserves the visible range", async () => {
+  const newestChunk = [
+    "time,open_M15,high_M15,low_M15,close_M15,volume_M15,support_low_H4,support_high_H4",
+    "2023-11-14 22:28:20,105,112,101,108,11,90,96",
+    "2023-11-14 22:43:20,108,114,106,110,12,90,96",
+  ].join("\n");
+  const olderRows = Array.from({ length: 1000 }, (_, index) => {
+    const time = new Date(Date.UTC(2023, 10, 4) + index * 15 * 60_000).toISOString().replace("T", " ").slice(0, 19);
+    return `${time},98,104,96,100,9,90,96`;
+  });
+  const fullCsv = [newestChunk.split("\n")[0], ...olderRows, ...newestChunk.split("\n").slice(1)].join("\n");
+  globalThis.fetch = vi.fn((url) => {
+    const path = String(url);
+    if (path.startsWith("df.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(fullCsv) });
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(results) });
+  });
+
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 1));
+  assert.deepEqual(chart.setMarketData.mock.calls[0][0].map(({ time }) => time), [Date.parse("2023-11-14T22:15:00Z"), Date.parse("2023-11-14T22:30:00Z")]);
+
+  zoomHandlers.forEach((handler) => { handler(); handler(); });
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
+  assert.equal(chart.setMarketData.mock.calls[1][0].length, 1002);
+  assert.equal(chart.setMarketData.mock.calls[1][0][0].time, Date.parse("2023-11-04T00:00:00Z"));
+  assert.equal(chart.setMarketData.mock.calls[1][0].at(-1).time, Date.parse("2023-11-14T22:30:00Z"));
+  assert.deepEqual(chartApi.dispatchAction.mock.calls.at(-1)[0], {
+    type: "dataZoom",
+    startValue: "first",
+    endValue: "last",
+  });
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df.csv")).length, 1, "panning uses the in-memory chunk without another CSV request");
+});
+
+test("keeps the expanded cached rows aligned after a timeframe change", async () => {
+  const header = "time,open_M15,high_M15,low_M15,close_M15,volume_M15,open_H1,high_H1,low_H1,close_H1,volume_H1,support_low_H4,support_high_H4";
+  const newestChunk = [
+    header,
+    "2023-11-14 22:28:20,105,112,101,108,11,100,115,95,110,21,90,96",
+    "2023-11-14 22:43:20,108,114,106,110,12,100,115,95,110,21,90,96",
+  ].join("\n");
+  const olderRows = Array.from({ length: 1000 }, (_, index) => {
+    const time = new Date(Date.UTC(2023, 10, 4) + index * 15 * 60_000).toISOString().replace("T", " ").slice(0, 19);
+    return `${time},98,104,96,100,9,95,110,90,105,20,90,96`;
+  });
+  const fullCsv = [header, ...olderRows, ...newestChunk.split("\n").slice(1)].join("\n");
+  globalThis.fetch = vi.fn((url) => {
+    const path = String(url);
+    if (path.startsWith("df.csv")) return Promise.resolve({ ok: true, text: () => Promise.resolve(fullCsv) });
+    return Promise.resolve({ ok: true, text: () => Promise.resolve(results) });
+  });
+
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 1));
+  zoomHandlers.forEach((handler) => handler());
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
+  assert.equal(chart.setMarketData.mock.calls[1][0].length, 1002);
+
+  fireEvent.click(screen.getByRole("button", { name: "H1" }));
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 3));
+  assert.equal(chart.setMarketData.mock.calls[2][0].length, 251);
+  assert.equal(globalThis.fetch.mock.calls.filter(([url]) => String(url).startsWith("df.csv")).length, 1);
 });
 
 test("registers the session-boundary renderer and adds its markers after market data loads", async () => {
@@ -137,7 +297,7 @@ test("registers the session-boundary renderer and adds its markers after market 
   await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
   assert.deepEqual(
     chart.registerDrawingRenderer.mock.calls.map(([renderer]) => renderer.type),
-    ["backtest-trades", SESSION_BOUNDARY_DRAWING_ID],
+    ["backtest-trades", SESSION_BOUNDARY_DRAWING_ID, CONSOLIDATION_HOTSPOT_DRAWING_ID],
   );
   const drawings = chart.addDrawing.mock.calls.map(([drawing]) => drawing);
   assert.equal(drawings.length, 1);
@@ -148,6 +308,62 @@ test("registers the session-boundary renderer and adds its markers after market 
 
   zoomHandlers.forEach((handler) => handler());
   assert.ok(chartApi.setOption.mock.calls.some(([option]) => Array.isArray(option.yAxis)));
+});
+
+test("toggles consolidation hotspots without changing session indicators and includes bounds in the price scale", async () => {
+  chartApi.getOption.mockReturnValue({
+    dataZoom: [{ type: "inside", start: 0, end: 100 }],
+    xAxis: [{ data: ["one", "two", "three"] }],
+    series: [],
+  });
+  const hotspotConfig = {
+    ...config,
+    indicators: [
+      {
+        type: "CONSOLIDATION_HOTSPOT",
+        columns: ["consolidation_H1", "consolidation_id_H1", "consolidation_high_H1", "consolidation_low_H1"],
+      },
+      { type: "ASIAN_HIGH", columns: ["asian_high_H1"] },
+    ],
+  };
+  const hotspotCsv = [
+    "time,open_M15,high_M15,low_M15,close_M15,volume_M15,consolidation_H1,consolidation_id_H1,consolidation_high_H1,consolidation_low_H1,asian_high_H1",
+    "2026-08-25 12:00:00+00:00,1.13,1.14,1.12,1.13,10,True,49,1.14154,1.13587,1.139",
+    "2026-08-25 12:15:00+00:00,1.13,1.14,1.12,1.13,10,true,49,1.14154,1.13587,1.139",
+    "2026-08-25 12:30:00+00:00,1.13,1.14,1.12,1.13,10,false,,,,1.139",
+  ].join("\n");
+  globalThis.fetch = vi.fn((url) => Promise.resolve({
+    ok: true,
+    text: () => Promise.resolve(String(url).startsWith("df") ? hotspotCsv : "{}"),
+  }));
+
+  render(<MarketChartPage active config={hotspotConfig} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
+  const drawing = chart.addDrawing.mock.calls.map(([entry]) => entry).find((entry) => entry.id === CONSOLIDATION_HOTSPOT_DRAWING_ID);
+  assert.ok(drawing);
+  assert.equal(chart.addDrawing.mock.calls.filter(([entry]) => entry.id === CONSOLIDATION_HOTSPOT_DRAWING_ID).length, 1, "the hotspot is registered exactly once");
+  assert.deepEqual(drawing.points, [
+    { timeIndex: -0.5, value: 1.14154, paneIndex: 0 },
+    { timeIndex: 1.5, value: 1.13587, paneIndex: 0 },
+  ]);
+  assert.ok(chartApi.setOption.mock.calls.some(([option]) => option.yAxis?.[0]?.max > 1.14154));
+  assert.equal(chart.addIndicator.mock.calls.length, 1, "the session level is initially plotted");
+
+  const hotspotToggle = screen.getByRole("button", { name: /Consolidation Hotspot/ });
+  fireEvent.click(hotspotToggle);
+  assert.equal(hotspotToggle.getAttribute("aria-pressed"), "false");
+  assert.equal(chart.removeDrawing.mock.calls.at(-1)[0], CONSOLIDATION_HOTSPOT_DRAWING_ID);
+  assert.equal(chartDrawings.has(CONSOLIDATION_HOTSPOT_DRAWING_ID), false, "one click removes the hotspot drawing");
+  assert.equal(chart.removeIndicator.mock.calls.length, 0);
+  assert.equal(chart.addIndicator.mock.calls.length, 1, "hiding the hotspot leaves session indicators untouched");
+
+  fireEvent.click(hotspotToggle);
+  assert.equal(hotspotToggle.getAttribute("aria-pressed"), "true");
+  assert.equal(chart.addDrawing.mock.calls.at(-1)[0].id, CONSOLIDATION_HOTSPOT_DRAWING_ID);
+  assert.equal(chartDrawings.has(CONSOLIDATION_HOTSPOT_DRAWING_ID), true, "one click restores the hotspot drawing");
+  assert.equal(chart.addDrawing.mock.calls.filter(([entry]) => entry.id === CONSOLIDATION_HOTSPOT_DRAWING_ID).length, 2);
+  assert.equal(chart.addIndicator.mock.calls.length, 1, "restoring the hotspot leaves session indicators untouched");
 });
 
 test("initializes only when active, reflows after showing, and destroys on unmount", async () => {
@@ -167,23 +383,165 @@ test("initializes only when active, reflows after showing, and destroys on unmou
   assert.equal(ResizeObserverMock.instances[0].disconnect.mock.calls.length, 1);
 });
 
-test("builds the Quantnoon QFChart theme", () => {
+test("builds the Quantnoon QFChart theme without the built-in databox", () => {
   const options = qfChartOptions({ symbol: "XAUUSD", entryTf: "H4" });
-  assert.equal(options.title, "XAUUSD H4");
+  assert.equal(options.title, "XAUUSD");
   assert.equal(options.upColor, "#22c55e");
   assert.equal(options.downColor, "#ef4444");
-  assert.equal(options.databox.position, "right");
-  assert.equal(options.databox.triggerOn, "mousemove");
+  assert.equal(options.databox, undefined);
 });
 
-test("recreates the chart with a floating tap databox when the viewport becomes mobile", async () => {
+test("uses a compact text result button with the primary-blue icon", async () => {
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" onViewBacktestResults={() => {}} />);
+  const button = await screen.findByRole("button", { name: "View Backtest Results" });
+  assert.match(button.className, /text-foreground/);
+  assert.doesNotMatch(button.className, /bg-\[#0f8eff\]/);
+  assert.match(button.querySelector("svg").getAttribute("class"), /text-\[#0f8eff\]/);
+});
+
+test("uses the responsive indicator overlay on mobile without restoring the databox", async () => {
   render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
   await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
-  assert.equal(QFChart.mock.calls[0][1].databox.position, "right");
+  assert.equal(QFChart.mock.calls[0][1].databox, undefined);
 
   mediaChangeListener({ matches: true });
 
   await waitFor(() => assert.equal(QFChart.mock.calls.length, 2));
   assert.equal(chart.destroy.mock.calls.length, 1);
-  assert.deepEqual(QFChart.mock.calls[1][1].databox, { position: "floating", triggerOn: "click" });
+  assert.equal(QFChart.mock.calls[1][1].databox, undefined);
+  const toggle = screen.getByRole("button", { name: "Indicators" });
+  assert.equal(toggle.getAttribute("aria-expanded"), "false");
+  fireEvent.click(toggle);
+  assert.equal(toggle.getAttribute("aria-expanded"), "true");
+});
+
+test("toggles a rendered indicator by crossing out its accessible button", async () => {
+  const user = userEvent.setup();
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+  const indicator = await screen.findByRole("button", { name: /Support Zone/ });
+  assert.equal(indicator.getAttribute("aria-pressed"), "true");
+  assert.equal(screen.queryByRole("checkbox"), null);
+
+  await user.click(indicator);
+  assert.equal(chart.removeIndicator.mock.calls[0][0], "support-zone");
+  assert.equal(indicator.getAttribute("aria-pressed"), "false");
+  assert.match(indicator.textContent, /Support Zone/);
+  assert.ok(indicator.querySelector("span.line-through"));
+
+  await user.keyboard("{Enter}");
+  assert.equal(chart.addIndicator.mock.calls.length, 2);
+  assert.equal(indicator.getAttribute("aria-pressed"), "true");
+  assert.equal(indicator.querySelector("span.line-through"), null);
+});
+
+test("toggles fixed UTC session boundaries through its crossed-out button", async () => {
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+  const toggle = await screen.findByRole("button", { name: "Session Boundaries" });
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
+  assert.equal(toggle.getAttribute("aria-pressed"), "true");
+
+  fireEvent.click(toggle);
+  assert.ok(chart.removeDrawing.mock.calls.some(([id]) => id === SESSION_BOUNDARY_DRAWING_ID));
+  assert.equal(toggle.getAttribute("aria-pressed"), "false");
+  assert.ok(toggle.querySelector("span.line-through"));
+
+  fireEvent.click(toggle);
+  assert.ok(chart.addDrawing.mock.calls.some(([drawing]) => drawing.id === SESSION_BOUNDARY_DRAWING_ID));
+  assert.equal(toggle.getAttribute("aria-pressed"), "true");
+  assert.equal(toggle.querySelector("span.line-through"), null);
+});
+
+test("switches timeframe using that timeframe's OHLC columns and keeps indicator visibility", async () => {
+  const timeframeCsv = [
+    "time,open_M15,high_M15,low_M15,close_M15,volume_M15,open_H1,high_H1,low_H1,close_H1,volume_H1,support_low_H4,support_high_H4",
+    "2026-08-25 12:00:00+00:00,1,2,0.5,1.5,10,1,3,0.25,2,40,0.8,1",
+    "2026-08-25 12:15:00+00:00,1.5,2.5,1,2,11,1,3,0.25,2,40,0.8,1",
+  ].join("\n");
+  globalThis.fetch = vi.fn((url) => Promise.resolve({
+    ok: true,
+    text: () => Promise.resolve(String(url).startsWith("df") ? timeframeCsv : results),
+  }));
+  render(<MarketChartPage active config={config} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+  const indicator = await screen.findByRole("button", { name: /Support Zone/ });
+  fireEvent.click(indicator);
+  assert.equal(indicator.getAttribute("aria-pressed"), "false");
+
+  fireEvent.click(screen.getByRole("button", { name: "H1" }));
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
+  const h1Records = chart.setMarketData.mock.calls[1][0];
+  assert.equal(h1Records.length, 1);
+  assert.deepEqual(
+    { open: h1Records[0].open, high: h1Records[0].high, low: h1Records[0].low, close: h1Records[0].close },
+    { open: 1, high: 3, low: 0.25, close: 2 },
+  );
+  assert.equal(chart.addIndicator.mock.calls.length, 1, "hidden indicator remains hidden after timeframe change");
+  const h1Indicator = screen.getByRole("button", { name: /Support Zone/ });
+  assert.equal(h1Indicator.getAttribute("aria-pressed"), "false");
+  assert.ok(h1Indicator.querySelector("span.line-through"));
+});
+
+test("keeps a configured indicator hidden when its chart runtime ID changes by timeframe", async () => {
+  const twoIndicatorConfig = {
+    ...config,
+    indicators: [
+      { type: "LONDON_HIGH", columns: ["london_high_M15"] },
+      { type: "LONDON_HIGH", columns: ["london_high_H1"] },
+    ],
+  };
+  const csvWithRuntimeIdShift = [
+    "time,open_M15,high_M15,low_M15,close_M15,volume_M15,open_H1,high_H1,low_H1,close_H1,volume_H1,london_high_M15,london_high_H1",
+    "2026-08-25 12:00:00+00:00,1,2,0.5,1.5,10,1,3,0.25,2,40,,5",
+    "2026-08-25 12:15:00+00:00,,,,,10,1,3,0.25,2,40,4,6",
+  ].join("\n");
+  globalThis.fetch = vi.fn((url) => Promise.resolve({
+    ok: true,
+    text: () => Promise.resolve(String(url).startsWith("df") ? csvWithRuntimeIdShift : results),
+  }));
+  render(<MarketChartPage active config={twoIndicatorConfig} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+
+  const hiddenAcrossTimeframes = await screen.findByRole("button", { name: /London High · H1/ });
+  assert.equal(hiddenAcrossTimeframes.getAttribute("aria-pressed"), "true");
+  fireEvent.click(hiddenAcrossTimeframes);
+  assert.equal(chart.removeIndicator.mock.calls[0][0], "london-high");
+
+  fireEvent.click(screen.getByRole("button", { name: "H1" }));
+  await waitFor(() => assert.equal(chart.setMarketData.mock.calls.length, 2));
+  const h1HiddenIndicator = screen.getByRole("button", { name: /London High · H1/ });
+  assert.equal(h1HiddenIndicator.getAttribute("aria-pressed"), "false");
+  assert.ok(h1HiddenIndicator.querySelector("span.line-through"));
+  assert.equal(chart.addIndicator.mock.calls.some(([id]) => id === "london-high_H1"), false);
+
+  fireEvent.click(h1HiddenIndicator);
+  assert.equal(chart.addIndicator.mock.calls.at(-1)[0], "london-high_H1");
+  assert.equal(h1HiddenIndicator.getAttribute("aria-pressed"), "true");
+});
+
+test("chart symbol selector calls the shared workspace selection callback", async () => {
+  const user = userEvent.setup();
+  const onSymbolChange = vi.fn();
+  const onViewBacktestResults = vi.fn();
+  render(<MarketChartPage
+    active
+    config={config}
+    symbol="Volatility 25 Index"
+    symbols={["Volatility 25 Index", "EURUSD"]}
+    onSymbolChange={onSymbolChange}
+    onViewBacktestResults={onViewBacktestResults}
+    dfPath="df.csv"
+    resultPath="result.json"
+  />);
+
+  await screen.findByRole("combobox", { name: "Chart symbol" });
+  await waitFor(() => screen.getByRole("button", { name: "M15" }));
+  const selector = screen.getByRole("combobox", { name: "Chart symbol" });
+  assert.match(selector.textContent, /Volatility 25 Index/);
+  assert.match(screen.getByRole("button", { name: "M15" }).className, /bg-\[#0f8eff\]\/15/);
+  const resultsButton = screen.getByRole("button", { name: /View Backtest Results/ });
+  assert.doesNotMatch(resultsButton.className, /bg-\[#0f8eff\]/);
+  assert.match(resultsButton.querySelector("svg").getAttribute("class"), /text-\[#0f8eff\]/);
+  await user.click(resultsButton);
+  assert.equal(onViewBacktestResults.mock.calls.length, 1);
+  await user.click(selector);
+  await user.click(await screen.findByRole("option", { name: "EURUSD" }));
+  assert.equal(onSymbolChange.mock.calls[0][0], "EURUSD");
 });

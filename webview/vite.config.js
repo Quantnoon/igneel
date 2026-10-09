@@ -22,7 +22,6 @@ function strategyResources() {
 
   return {
     name: "emit-strategy-resources",
-    apply: "build",
     generateBundle() {
       emitDirectory(this, strategiesDirectory);
     },
@@ -30,6 +29,7 @@ function strategyResources() {
 }
 
 export default defineConfig({
+  envPrefix: ["VITE_", "PUBLIC_"],
   plugins: [react(), tailwindcss(), strategyResources()],
   resolve: {
     alias: {

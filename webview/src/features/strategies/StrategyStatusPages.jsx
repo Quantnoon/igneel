@@ -1,4 +1,4 @@
-import { Link } from "../../app/router.jsx";
+import { Link } from "react-router";
 import { Alert } from "../../shared/components/Alert.jsx";
 
 function BackToStrategiesLink() {

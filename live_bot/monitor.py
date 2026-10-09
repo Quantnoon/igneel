@@ -14,6 +14,7 @@ from quantnoon_signal import SignalSender, SignalRecorder
 from pathlib import Path
 import os
 from dotenv import load_dotenv
+from live_bot.live_config import active_config
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
@@ -214,7 +215,7 @@ def can_trade(bot_config: dict) -> Dict[str, str]:
         return _blocked(reasons)
     return {"status": "can_trade", "reason": "Trading is allowed."}
 
-_db = Database()
+_db = Database(active_config["name"])
 
 def quantnoon_signal_provider(
     signal: dict,
@@ -225,14 +226,14 @@ def quantnoon_signal_provider(
     df: pd.DataFrame,
     entry_tf: str,
     exit_signal: function,
+    allow_new_signal: bool = True,
 ):
     if os.environ["QUANTNOON_SIGNAL"] == "true":
-        _Qsender = SignalSender()
-        _Qrecord = SignalRecorder()
         sent_signal = _db.get_row(f"{identifier}", "symbol", symbol)["data"]
 
         if sent_signal is None:
-            if signal["pos"] is not None:
+            if allow_new_signal and signal["pos"] is not None:
+                _Qsender = SignalSender()
                 _Qsender.send_signal_webhook(
                     identifier=identifier,
                     signal_name=signal_name,
@@ -290,6 +291,7 @@ def quantnoon_signal_provider(
                             update_record["tp"] = 0
 
             if update_record["exit_date"] is not None:
+                _Qrecord = SignalRecorder()
                 _Qrecord.send_record_webhook(
                     algo_name=update_record["algo_name"],
                     trade_date=update_record["trade_date"],

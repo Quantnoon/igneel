@@ -19,7 +19,7 @@ load_dotenv(ENV_FILE)
 
 _CACHE_SECONDS = 60 * 60
 _MAX_PAGE_BYTES = 2_000_000
-_MAX_PAGE_CHARS = 50_000
+_MAX_PAGE_CHARS = 100_000
 _MAX_REDIRECTS = 5
 _cache_lock = Lock()
 _search_cache: dict[tuple[str, int], tuple[float, dict]] = {}
@@ -44,7 +44,7 @@ def _remember(cache: dict, key, value) -> None:
 
 
 def web_search(query: str, max_results: int = 5) -> dict:
-    """Search the web for current market context and trading strategy sources."""
+    """Search the web for market context and goal-relevant trading material."""
     query = " ".join(query.split())
     if not query:
         return {"success": False, "error": "Search query must not be empty.", "results": []}

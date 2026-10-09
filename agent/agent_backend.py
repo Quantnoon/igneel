@@ -26,10 +26,6 @@ agent_filesystem_backend = FilesystemBackend(
     root_dir=str(AGENT_ROOT)
 )
 
-skills_backend = FilesystemBackend(
-    root_dir=str(SKILLS_ROOT)
-)
-
 memory_backend = StoreBackend(
     store=store,
     namespace=lambda _rt: (
@@ -39,8 +35,15 @@ memory_backend = StoreBackend(
 )
 
 
+SANDBOX_WORKSPACES = {
+    "atlas": "/workspace/atlas/market",
+    "acnologia": "/workspace/acnologia/market",
+    "grandine": "/workspace/grandine/market",
+}
+
+
 def _create_langsmith_sandbox() -> tuple[SandboxClient, object]:
-    """Create the single sandbox used by Atlas for this trader process."""
+    """Create the single sandbox and its specialist-owned workspaces."""
     api_key = os.environ.get("LANGSMITH_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError(
@@ -50,7 +53,7 @@ def _create_langsmith_sandbox() -> tuple[SandboxClient, object]:
 
     client = SandboxClient(api_key=api_key)
     try:
-        return client, client.create_sandbox()
+        sandbox = client.create_sandbox()
     except SandboxAuthenticationError as exc:
         client.close()
         raise RuntimeError(
@@ -58,19 +61,58 @@ def _create_langsmith_sandbox() -> tuple[SandboxClient, object]:
             "LANGSMITH_API_KEY is valid and has sandbox access."
         ) from exc
 
+    try:
+        result = sandbox.run(
+            'python3 -m pip install --no-cache-dir pandas numpy --break-system-packages && mkdir -p /workspace/atlas/market /workspace/acnologia/market /workspace/grandine/market && python3 -c "import pandas, numpy; print(pandas.__version__)"',
+            timeout=120,
+        )
+        if not result.success:
+            raise RuntimeError("Pandas installation command exited unsuccessfully.")
+    except Exception as exc:
+        try:
+            sandbox.delete()
+        except Exception:
+            pass
+        finally:
+            client.close()
+        raise RuntimeError(
+            "Unable to install pandas and numpy in the LangSmith sandbox."
+        ) from exc
+
+    return client, sandbox
+
 
 sandbox_client, ls_sandbox = _create_langsmith_sandbox()
 _sandbox_shutdown = False
 
-sandbox_backend = LangSmithSandbox(
-    sandbox=ls_sandbox
-)
+atlas_sandbox_backend = LangSmithSandbox(sandbox=ls_sandbox)
+acnologia_sandbox_backend = LangSmithSandbox(sandbox=ls_sandbox)
+grandine_sandbox_backend = LangSmithSandbox(sandbox=ls_sandbox)
+
+# Backwards-compatible default for code that has not yet been assigned a
+# specialist-specific workspace.
+sandbox_backend = atlas_sandbox_backend
 
 backend_with_sandbox = CompositeBackend(
-    default=sandbox_backend,
+    default=atlas_sandbox_backend,
     routes={
         "/memory/": memory_backend,
-        "/skills/": skills_backend,
+    },
+)
+
+
+acnologia_backend_with_sandbox = CompositeBackend(
+    default=acnologia_sandbox_backend,
+    routes={
+        "/memory/": memory_backend,
+    },
+)
+
+
+grandine_backend_with_sandbox = CompositeBackend(
+    default=grandine_sandbox_backend,
+    routes={
+        "/memory/": memory_backend,
     },
 )
 
@@ -79,7 +121,6 @@ backend = CompositeBackend(
     default=agent_filesystem_backend,
     routes={
         "/memory/": memory_backend,
-        "/skills/": skills_backend,
     },
 )
 

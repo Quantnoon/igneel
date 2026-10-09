@@ -1,4 +1,6 @@
 import { useMemo } from "react";
+import { ArrowLeft } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Alert } from "../../shared/components/Alert.jsx";
 import { useResourceJson } from "../../shared/hooks/use-resource-json.js";
 import { formatMoney } from "../../shared/lib/formatters.js";
@@ -14,7 +16,7 @@ function parseResults(text) {
   return flattenResults(JSON.parse(text));
 }
 
-export function BacktestResultsPage({ active, resultPath, dfPath, symbol }) {
+export function BacktestResultsPage({ active, resultPath, dfPath, symbol, symbols = [], onSymbolChange, onBackToChart }) {
   const { data: results, error, loading } = useResourceJson(resultPath, parseResults, { allowMissing: true });
   const availableResults = results ?? [];
   const selected = useMemo(() => availableResults.find((result) => result.symbol === symbol) ?? null, [availableResults, symbol]);
@@ -42,9 +44,30 @@ export function BacktestResultsPage({ active, resultPath, dfPath, symbol }) {
 
   return (
     <div className="mx-auto w-full max-w-[100rem] px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
-      <div className="flex flex-col items-stretch justify-between gap-5 md:flex-row md:items-end">
+      <div className="flex flex-col items-stretch justify-between gap-3 md:flex-row md:items-end">
         <PriceDataTimeline dfPath={dfPath} />
-        <p className="font-mono text-sm text-muted-foreground">{symbol}</p>
+        <div className="flex items-center justify-between gap-4 md:justify-end">
+          {onBackToChart && (
+            <button
+              type="button"
+              onClick={onBackToChart}
+              className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-[#0f8eff]/60 px-4 text-sm font-semibold text-[#0f8eff] transition-colors hover:bg-[#0f8eff]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#0f8eff]"
+            >
+              <ArrowLeft aria-hidden="true" className="size-4" />
+              Back to Chart
+            </button>
+          )}
+          {symbols.length > 0 && (
+            <Select value={symbol} onValueChange={onSymbolChange}>
+              <SelectTrigger aria-label="Backtest symbol" className="h-10! min-w-36 border-foreground/15 bg-[#111111] text-sm text-foreground hover:bg-[#171717]">
+                <SelectValue placeholder="Select symbol" />
+              </SelectTrigger>
+              <SelectContent className="border-foreground/15 bg-[#111111] text-foreground">
+                {symbols.map((option) => <SelectItem key={option} value={option}>{option}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
+        </div>
       </div>
 
       <div className="mt-5 grid gap-3">
@@ -54,20 +77,16 @@ export function BacktestResultsPage({ active, resultPath, dfPath, symbol }) {
       </div>
 
       {selected && balanceChart && (
-        <div className="mt-7 grid gap-6 lg:gap-8">
-          <div>
-            <p className="text-sm text-muted-foreground">Selected backtest</p>
-            <h2 className="break-words font-heading text-xl font-semibold tracking-tight">{selected.symbol} · {selected.name}</h2>
-          </div>
-
-          <section aria-label="Account performance">
-            <ResultChart options={balanceChart.options} description="Account balance after every trade, including flat points for skipped trades." active={active} wide>
+        <div className="mt-4 grid gap-5 lg:gap-6">
+          <section className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2" aria-label="Account performance and drawdown">
+            <ResultChart options={balanceChart.options} description="Account balance after every trade, including flat points for skipped trades." active={active} compact>
               {!balanceChart.balance.reconciles && (
                 <Alert role="status">
                   Trade log ends at {formatMoney(balanceChart.balance.actualFinalBalance, balanceChart.balance.currency)}, but the report final balance is {formatMoney(balanceChart.balance.expectedFinalBalance, balanceChart.balance.currency)}.
                 </Alert>
               )}
             </ResultChart>
+            <ResultChart options={drawdownOptions} description="Percentage decline from the running account balance peak." active={active} compact />
           </section>
 
           <section className="grid gap-3" aria-labelledby="summary-heading">
@@ -80,7 +99,6 @@ export function BacktestResultsPage({ active, resultPath, dfPath, symbol }) {
 
           <section className="grid gap-4" aria-label="Performance charts">
             <div className="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-              <ResultChart options={drawdownOptions} description="Percentage decline from the running account balance peak." active={active} wide />
               <ResultChart options={dayOptions} description="Performance by day showing wins, losses, and profit or loss." active={active} />
               <ResultChart options={sessionOptions} description="Performance by session showing wins, losses, and profit or loss." active={active} />
               {skipOptions && <ResultChart options={skipOptions} description="Number of skipped trades grouped by reason." active={active} wide />}

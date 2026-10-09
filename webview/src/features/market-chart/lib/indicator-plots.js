@@ -250,6 +250,7 @@ function buildLinePlots(records, entry, usedIds, entryTf) {
 }
 
 export function buildIndicator(records, entry, usedIds, entryTf) {
+  if (entry.type === "CONSOLIDATION_HOTSPOT") return null;
   if (SESSION_LEVELS[entry.type]) return buildSessionLevelPlot(records, entry, usedIds);
   if (ZONES[entry.type]) return buildZonePlots(records, entry, usedIds);
   if (isRegimeType(entry.type)) return buildRegimePlots(records, entry, usedIds);

@@ -3,6 +3,7 @@ import { test } from "vitest";
 
 import {
   backtestTradeSegments,
+  availableMarketTimeframes,
   collapseEntryCandles,
   convertMarketData,
   interpolateIndicatorPoints,
@@ -64,6 +65,52 @@ test("attaches finite indicator values and skips empty or NaN cells", () => {
     { time: Date.UTC(2026, 7, 25, 12), open: 1, high: 2, low: 0.5, close: 1.5, volume: 10, ema_12_H1: 1.25, sma_50_H1: 2.5 },
     { time: Date.UTC(2026, 7, 25, 12, 15), open: 2, high: 3, low: 1.5, close: 2.5, volume: 20 },
     { time: Date.UTC(2026, 7, 25, 12, 30), open: 3, high: 4, low: 2.5, close: 3.5, volume: 30, ema_12_H1: 3.25 },
+  ]);
+});
+
+test("lists only timeframes with complete OHLC columns in market timeframe order", () => {
+  const csv = [
+    "time,open_H4,high_H4,low_H4,close_H4,open_M15,high_M15,low_M15,close_M15,open_H1,high_H1,low_H1",
+  ].join("\n");
+  assert.deepEqual(availableMarketTimeframes(csv), ["M15", "H4"]);
+});
+
+test("converts selected timeframe OHLC fields and defaults missing volume to zero", () => {
+  const csv = [
+    "time,open_M15,high_M15,low_M15,close_M15,open_H1,high_H1,low_H1,close_H1",
+    "2026-08-25 12:00:00+00:00,1,2,0.5,1.5,1,3,0.25,2",
+    "2026-08-25 12:15:00+00:00,1.5,2.5,1,2,1,3,0.25,2",
+  ].join("\n");
+  assert.deepEqual(convertMarketData(csv, "H1"), [
+    { time: Date.UTC(2026, 7, 25, 12), open: 1, high: 3, low: 0.25, close: 2, volume: 0 },
+  ]);
+});
+
+test("parses consolidation flags as booleans and ignores malformed consolidation values", () => {
+  const columns = [
+    "consolidation_H1",
+    "consolidation_id_H1",
+    "consolidation_high_H1",
+    "consolidation_low_H1",
+  ];
+  const csv = [
+    `${HEADER},${columns.join(",")}`,
+    '"2026-08-25 12:00:00+00:00",1,2,0.5,1.5,10,True,49.0,1.14154,1.13587',
+    '"2026-08-25 12:15:00+00:00",1,2,0.5,1.5,10,false,NaN,invalid,',
+  ].join("\n");
+
+  assert.deepEqual(convertMarketData(csv, "M15", columns), [
+    {
+      time: Date.UTC(2026, 7, 25, 12), open: 1, high: 2, low: 0.5, close: 1.5, volume: 10,
+      consolidation_H1: true,
+      consolidation_id_H1: 49,
+      consolidation_high_H1: 1.14154,
+      consolidation_low_H1: 1.13587,
+    },
+    {
+      time: Date.UTC(2026, 7, 25, 12, 15), open: 1, high: 2, low: 0.5, close: 1.5, volume: 10,
+      consolidation_H1: false,
+    },
   ]);
 });
 
@@ -214,14 +261,14 @@ test("ignores malformed backtest trade cells without failing the chart data", ()
   assert.equal(records[1].backtestTrade, undefined);
 });
 
-test("preserves repeated candles needed as trade endpoints", () => {
+test("keeps one timeframe candle and remaps embedded trade endpoints to its buckets", () => {
   const csv = [
     TRADE_HEADER.replaceAll("_M15", "_H1"),
     tradeRow('"2026-08-25 12:00:00+00:00"', ["1", "2", "0.5", "1.5", "10"], null),
     tradeRow('"2026-08-25 12:15:00+00:00"', ["1", "2", "0.5", "1.5", "10"], null),
     tradeRow('"2026-08-25 12:30:00+00:00"', ["1", "2", "0.5", "1.5", "10"], {
       id: 0, position: "buy", entry: "1.5", exit: "1.5",
-      openTime: '"2026-08-25 12:30:00+00:00"', closeTime: '"2026-08-25 12:45:00+00:00"',
+      openTime: '"2026-08-25 12:30:00+00:00"', closeTime: '"2026-08-25 13:15:00+00:00"',
       result: "breakeven",
     }),
     tradeRow('"2026-08-25 12:45:00+00:00"', ["1", "2", "0.5", "1.5", "10"], null),
@@ -231,10 +278,29 @@ test("preserves repeated candles needed as trade endpoints", () => {
   const records = convertMarketData(csv, "H1");
   assert.deepEqual(records.map((record) => record.time), [
     Date.UTC(2026, 7, 25, 12),
-    Date.UTC(2026, 7, 25, 12, 30),
-    Date.UTC(2026, 7, 25, 12, 45),
+    Date.UTC(2026, 7, 25, 13),
   ]);
-  assert.ok(records[1].backtestTrade);
+  assert.ok(records[0].backtestTrade);
+  assert.deepEqual(backtestTradeSegments(records).map(({ startIndex, endIndex }) => [startIndex, endIndex]), [[0, 1]]);
+});
+
+test("groups H4 merged rows once per UTC bucket and folds indicators to the latest row", () => {
+  const csv = [
+    "time,open_H4,high_H4,low_H4,close_H4,volume_H4,consolidation_H1,consolidation_id_H1,support_low_H4",
+    "2026-08-25 00:15:00+00:00,1,3,0.5,2,40,true,4,0.8",
+    "2026-08-25 01:45:00+00:00,1,3,0.5,2,40,false,4,0.9",
+    "2026-08-25 03:45:00+00:00,1,3,0.5,2,40,true,5,1.0",
+    "2026-08-25 04:00:00+00:00,2,4,1.5,3,40,true,5,1.1",
+  ].join("\n");
+
+  const records = convertMarketData(csv, "H4", ["consolidation_H1", "consolidation_id_H1", "support_low_H4"]);
+  assert.deepEqual(records.map(({ time, open }) => [time, open]), [
+    [Date.UTC(2026, 7, 25, 0), 1],
+    [Date.UTC(2026, 7, 25, 4), 2],
+  ]);
+  assert.equal(records[0].consolidation_H1, true);
+  assert.equal(records[0].consolidation_id_H1, 5);
+  assert.equal(records[0].support_low_H4, 1);
 });
 
 test("backtestTradeSegments anchors complete trades and drops malformed ones", () => {
