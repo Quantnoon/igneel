@@ -12,6 +12,7 @@ import { flattenResults } from "../backtest-results/lib/backtest-results-data.js
 import { buildBacktestTradesDrawing, backtestTradesRenderer } from "./lib/backtest-trade-plots.js";
 import { buildConsolidationHotspotsDrawing, CONSOLIDATION_HOTSPOT_COLOR, consolidationHotspotsRenderer } from "./lib/consolidation-hotspots.js";
 import { applyIndicatorSeriesColors, buildIndicator, chartAddOptions, indicatorSeriesColorPatches } from "./lib/indicator-plots.js";
+import { buildPrevWeekZonesDrawing, PREV_WEEK_ZONES_COLOR, prevWeekZonesRenderer } from "./lib/prev-week-zones.js";
 import { buildSessionBoundariesDrawing, sessionBoundariesRenderer } from "./lib/session-boundaries.js";
 import { priceLevelColumns, visiblePriceRange } from "./lib/visible-price-range.js";
 import { useMediaQuery } from "../../shared/hooks/use-media-query.js";
@@ -58,6 +59,19 @@ function buildIndicatorItems(records, config, timeframe) {
         drawing,
         entry,
         color: CONSOLIDATION_HOTSPOT_COLOR,
+      });
+      continue;
+    }
+    if (entry.type === "PREV_WEEK_ZONES") {
+      const drawing = buildPrevWeekZonesDrawing(records, [entry]);
+      if (drawing) items.push({
+        id: drawing.id,
+        visibilityKey,
+        kind: "drawing",
+        label: indicatorLabel(entry),
+        drawing,
+        entry,
+        color: PREV_WEEK_ZONES_COLOR,
       });
       continue;
     }
@@ -215,6 +229,7 @@ export function MarketChartPage({ active, visible = true, config, dfPath, result
     chart.registerDrawingRenderer(backtestTradesRenderer);
     chart.registerDrawingRenderer(sessionBoundariesRenderer);
     chart.registerDrawingRenderer(consolidationHotspotsRenderer);
+    chart.registerDrawingRenderer(prevWeekZonesRenderer);
     observerRef.current = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(() => chart.resize());
     observerRef.current?.observe(containerRef.current);
   }, [active, chartData, dfPath, isMobile, state.data, timeframe, symbol]);

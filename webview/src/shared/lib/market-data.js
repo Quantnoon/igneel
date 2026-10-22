@@ -360,6 +360,10 @@ export function convertMarketData(csvText, entryTf, indicatorColumns = []) {
         candle[column] = rawValue.trim().toLowerCase() === "true";
         continue;
       }
+      if (/^prev_week_zone[0-9]+_(type|source)(_[A-Za-z0-9]+)?$/i.test(column)) {
+        candle[column] = rawValue.trim();
+        continue;
+      }
       const number = Number(rawValue);
       if (Number.isFinite(number)) candle[column] = number;
     }

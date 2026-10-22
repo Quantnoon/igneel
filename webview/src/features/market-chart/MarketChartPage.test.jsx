@@ -49,6 +49,7 @@ import { MarketChartPage, qfChartOptions } from "./MarketChartPage.jsx";
 import { clearCsvDatasetCache } from "../../shared/api/fetch-csv-chunks.js";
 import { clearCachedText } from "../../shared/api/fetch-cached-text.js";
 import { CONSOLIDATION_HOTSPOT_DRAWING_ID } from "./lib/consolidation-hotspots.js";
+import { PREV_WEEK_ZONES_DRAWING_ID } from "./lib/prev-week-zones.js";
 import { SESSION_BOUNDARY_DRAWING_ID } from "./lib/session-boundaries.js";
 
 const config = {
@@ -115,7 +116,7 @@ test("creates a QFChart with market data, filled-zone indicators, and result tra
   assert.equal(chart.addIndicator.mock.calls[0][1]["support-zone-fill"].options.style, "fill");
   assert.deepEqual(
     chart.registerDrawingRenderer.mock.calls.map(([renderer]) => renderer.type),
-    ["backtest-trades", SESSION_BOUNDARY_DRAWING_ID, CONSOLIDATION_HOTSPOT_DRAWING_ID],
+    ["backtest-trades", SESSION_BOUNDARY_DRAWING_ID, CONSOLIDATION_HOTSPOT_DRAWING_ID, PREV_WEEK_ZONES_DRAWING_ID],
   );
   assert.equal(chart.addDrawing.mock.calls.length, 2);
   assert.equal(new Set(chart.addDrawing.mock.calls.map(([drawing]) => drawing.id)).size, 2);
@@ -297,7 +298,7 @@ test("registers the session-boundary renderer and adds its markers after market 
   await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
   assert.deepEqual(
     chart.registerDrawingRenderer.mock.calls.map(([renderer]) => renderer.type),
-    ["backtest-trades", SESSION_BOUNDARY_DRAWING_ID, CONSOLIDATION_HOTSPOT_DRAWING_ID],
+    ["backtest-trades", SESSION_BOUNDARY_DRAWING_ID, CONSOLIDATION_HOTSPOT_DRAWING_ID, PREV_WEEK_ZONES_DRAWING_ID],
   );
   const drawings = chart.addDrawing.mock.calls.map(([drawing]) => drawing);
   assert.equal(drawings.length, 1);
@@ -364,6 +365,66 @@ test("toggles consolidation hotspots without changing session indicators and inc
   assert.equal(chartDrawings.has(CONSOLIDATION_HOTSPOT_DRAWING_ID), true, "one click restores the hotspot drawing");
   assert.equal(chart.addDrawing.mock.calls.filter(([entry]) => entry.id === CONSOLIDATION_HOTSPOT_DRAWING_ID).length, 2);
   assert.equal(chart.addIndicator.mock.calls.length, 1, "restoring the hotspot leaves session indicators untouched");
+});
+
+test("toggles prev week zones as a drawing and includes zone bounds in the price scale", async () => {
+  chartApi.getOption.mockReturnValue({
+    dataZoom: [{ type: "inside", start: 0, end: 100 }],
+    xAxis: [{ data: ["one", "two", "three", "four"] }],
+    series: [],
+  });
+  const prevWeekConfig = {
+    ...config,
+    indicators: [
+      {
+        type: "PREV_WEEK_ZONES",
+        columns: [
+          "prev_week_zone1_low_H1",
+          "prev_week_zone1_high_H1",
+          "prev_week_zone1_type_H1",
+          "prev_week_zone1_source_H1",
+          "prev_week_high_level_H1",
+          "prev_week_low_level_H1",
+          "prev_week_atr_H1",
+        ],
+      },
+    ],
+  };
+  const prevWeekCsv = [
+    "time,open_M15,high_M15,low_M15,close_M15,volume_M15,prev_week_zone1_low_H1,prev_week_zone1_high_H1,prev_week_zone1_type_H1,prev_week_zone1_source_H1,prev_week_high_level_H1,prev_week_low_level_H1,prev_week_atr_H1",
+    "2026-08-25 12:00:00+00:00,1.13,1.14,1.12,1.13,10,,,,,,,",
+    "2026-09-01 12:00:00+00:00,1.13,1.14,1.12,1.13,10,1.13,1.15,support,PWL,1.16,1.12,0.01",
+    "2026-09-01 12:15:00+00:00,1.13,1.14,1.12,1.13,10,1.13,1.15,support,PWL,1.16,1.12,0.01",
+    "2026-09-01 12:30:00+00:00,1.13,1.14,1.12,1.13,10,1.13,1.15,support,PWL,1.16,1.12,0.01",
+  ].join("\n");
+  globalThis.fetch = vi.fn((url) => Promise.resolve({
+    ok: true,
+    text: () => Promise.resolve(String(url).startsWith("df") ? prevWeekCsv : "{}"),
+  }));
+
+  render(<MarketChartPage active config={prevWeekConfig} symbol="Volatility 25 Index" dfPath="df.csv" resultPath="result.json" />);
+
+  await waitFor(() => assert.equal(QFChart.mock.calls.length, 1));
+  const drawing = chart.addDrawing.mock.calls
+    .map(([entry]) => entry)
+    .find((entry) => entry.id === PREV_WEEK_ZONES_DRAWING_ID);
+
+  assert.ok(drawing);
+  assert.deepEqual(drawing.points.slice(0, 2), [
+    { timeIndex: 0.5, value: 1.15, paneIndex: 0 },
+    { timeIndex: 3.5, value: 1.13, paneIndex: 0 },
+  ]);
+  assert.equal(drawing.rectStyles[0].stroke, "#2ca02c");
+  assert.ok(chartApi.setOption.mock.calls.some(([option]) => option.yAxis?.[0]?.max > 1.15));
+
+  const toggle = screen.getByRole("button", { name: /Prev Week Zones/ });
+  fireEvent.click(toggle);
+  assert.equal(chart.removeDrawing.mock.calls.at(-1)[0], PREV_WEEK_ZONES_DRAWING_ID);
+  assert.equal(chartDrawings.has(PREV_WEEK_ZONES_DRAWING_ID), false, "one click removes the zone drawing");
+
+  fireEvent.click(toggle);
+  assert.equal(chart.addDrawing.mock.calls.at(-1)[0].id, PREV_WEEK_ZONES_DRAWING_ID);
+  assert.equal(chartDrawings.has(PREV_WEEK_ZONES_DRAWING_ID), true, "one click restores the zone drawing");
 });
 
 test("initializes only when active, reflows after showing, and destroys on unmount", async () => {

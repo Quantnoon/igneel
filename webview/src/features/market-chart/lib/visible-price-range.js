@@ -5,6 +5,7 @@ const PRICE_ZONE_TYPES = new Set([
   "RESISTANCE_ZONE",
   "BULLISH_FVG",
   "BEARISH_FVG",
+  "PREV_WEEK_ZONES",
 ]);
 
 const SESSION_LEVEL_TYPES = new Set([
@@ -17,15 +18,25 @@ const SESSION_LEVEL_TYPES = new Set([
 ]);
 
 const CONSOLIDATION_HOTSPOT_TYPE = "CONSOLIDATION_HOTSPOT";
+const PREV_WEEK_ZONES_TYPE = "PREV_WEEK_ZONES";
 
 export const VISIBLE_PRICE_RANGE_PADDING = 0.05;
+
+function prevWeekZoneLevelColumn(column) {
+  return typeof column === "string" && /^prev_week_zone[0-9]+_(low|high)(_[A-Za-z0-9]+)?$/.test(column);
+}
+
+function priceZoneIndicatorColumns(indicator) {
+  const columns = Array.isArray(indicator?.columns) ? indicator.columns : [];
+  if (indicator?.type === PREV_WEEK_ZONES_TYPE) return columns.filter(prevWeekZoneLevelColumn);
+  return columns.filter((column) => typeof column === "string");
+}
 
 export function priceZoneColumns(indicators) {
   if (!Array.isArray(indicators)) return [];
   return indicators
     .filter((indicator) => PRICE_ZONE_TYPES.has(indicator?.type))
-    .flatMap((indicator) => Array.isArray(indicator.columns) ? indicator.columns : [])
-    .filter((column) => typeof column === "string");
+    .flatMap(priceZoneIndicatorColumns);
 }
 
 export function priceLevelColumns(indicators) {
@@ -34,6 +45,9 @@ export function priceLevelColumns(indicators) {
     if (CONSOLIDATION_HOTSPOT_TYPE === indicator?.type) {
       return (Array.isArray(indicator.columns) ? indicator.columns : [])
         .filter((column) => typeof column === "string" && /^consolidation_(high|low)_/i.test(column));
+    }
+    if (PREV_WEEK_ZONES_TYPE === indicator?.type) {
+      return priceZoneIndicatorColumns(indicator);
     }
     if (!PRICE_ZONE_TYPES.has(indicator?.type) && !SESSION_LEVEL_TYPES.has(indicator?.type)) return [];
     return (Array.isArray(indicator.columns) ? indicator.columns : [])
