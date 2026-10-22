@@ -114,6 +114,33 @@ test("parses consolidation flags as booleans and ignores malformed consolidation
   ]);
 });
 
+test("keeps prev week zone type and source strings and skips empty cells", () => {
+  const columns = [
+    "prev_week_zone1_low_H1",
+    "prev_week_zone1_high_H1",
+    "prev_week_zone1_type_H1",
+    "prev_week_zone1_source_H1",
+  ];
+  const csv = [
+    `${HEADER},${columns.join(",")}`,
+    '"2026-08-25 12:00:00+00:00",1,2,0.5,1.5,10,1.14,1.16,resistance,PWH',
+    '"2026-08-25 12:15:00+00:00",1,2,0.5,1.5,10,,,,',
+  ].join("\n");
+
+  assert.deepEqual(convertMarketData(csv, "M15", columns), [
+    {
+      time: Date.UTC(2026, 7, 25, 12), open: 1, high: 2, low: 0.5, close: 1.5, volume: 10,
+      prev_week_zone1_low_H1: 1.14,
+      prev_week_zone1_high_H1: 1.16,
+      prev_week_zone1_type_H1: "resistance",
+      prev_week_zone1_source_H1: "PWH",
+    },
+    {
+      time: Date.UTC(2026, 7, 25, 12, 15), open: 1, high: 2, low: 0.5, close: 1.5, volume: 10,
+    },
+  ]);
+});
+
 test("tolerates missing indicator columns while keeping OHLCV required", () => {
   const csv = `${INDICATOR_HEADER}\n"2026-08-25 12:00:00+00:00",1,2,0.5,1.5,10,1.25,2.5`;
 

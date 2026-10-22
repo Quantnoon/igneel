@@ -73,3 +73,28 @@ test("includes consolidation bounds but excludes consolidation IDs from the visi
   assert.equal(range.max, 13.2);
   assert.equal(range.min, 8.8);
 });
+
+test("includes prev week zone bounds but excludes their type columns from the visible price scale", () => {
+  const indicators = [{
+    type: "PREV_WEEK_ZONES",
+    columns: [
+      "prev_week_zone1_low_H1",
+      "prev_week_zone1_high_H1",
+      "prev_week_zone1_type_H1",
+      "prev_week_zone2_low_H1",
+      "prev_week_zone2_high_H1",
+      "prev_week_zone2_source_H1",
+      "prev_week_high_level_H1",
+      "prev_week_atr_H1",
+    ],
+  }];
+  const expected = [
+    "prev_week_zone1_low_H1",
+    "prev_week_zone1_high_H1",
+    "prev_week_zone2_low_H1",
+    "prev_week_zone2_high_H1",
+  ];
+
+  assert.deepEqual(priceZoneColumns(indicators), expected);
+  assert.deepEqual(priceLevelColumns(indicators), expected);
+});

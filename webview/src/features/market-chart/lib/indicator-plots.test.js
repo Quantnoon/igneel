@@ -355,3 +355,15 @@ test("parseIndicatorConfig filters malformed entries and non-string columns", ()
   assert.deepEqual(parsed, [{ type: "EMA", columns: ["ema_14_H1"] }]);
   assert.deepEqual(parseIndicatorConfig(undefined), []);
 });
+
+test("PREV_WEEK_ZONES renders as a chart drawing instead of indicator plots", () => {
+  assert.equal(
+    buildIndicator(
+      [candleRecord(0)],
+      { type: "PREV_WEEK_ZONES", columns: ["prev_week_zone1_low_H1", "prev_week_zone1_high_H1"] },
+      new Set(),
+      "M15",
+    ),
+    null,
+  );
+});

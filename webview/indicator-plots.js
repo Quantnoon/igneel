@@ -60,6 +60,12 @@ const ZONES = {
 export const REGIME_PANE_HEIGHT = 8;
 export const HIDDEN_OVERLAY_TITLE_COLOR = "rgba(0, 0, 0, 0)";
 
+const PREV_WEEK_ZONE_COLORS = {
+  resistance: { color: "#d62728", fillColor: "rgba(214, 39, 40, 0.18)" },
+  support: { color: "#2ca02c", fillColor: "rgba(44, 160, 44, 0.18)" },
+  neutral: { color: "#7f7f7f", fillColor: "rgba(127, 127, 127, 0.18)" },
+};
+
 const REGIME_COLORS = {
   0: "#26A69A",
   1: "#FFB300",
@@ -108,6 +114,66 @@ function uniqueIndicatorId(preferredId, entry, usedIds) {
 
 function zoneColumn(columns, stem) {
   return columns.find((column) => column === stem || column.startsWith(`${stem}_`));
+}
+
+function prevWeekZoneType(record, column) {
+  const value = record?.[column];
+  return typeof value === "string" && PREV_WEEK_ZONE_COLORS[value] ? value : "neutral";
+}
+
+function typedBandPoints(records, lowColumn, highColumn, typeColumn) {
+  const groups = new Map();
+  for (const record of records) {
+    const low = record[lowColumn];
+    const high = record[highColumn];
+    if (!Number.isFinite(low) || !Number.isFinite(high)) continue;
+    const type = prevWeekZoneType(record, typeColumn);
+    if (!groups.has(type)) groups.set(type, { low: [], high: [] });
+    groups.get(type).low.push({ time: record.time, value: low });
+    groups.get(type).high.push({ time: record.time, value: high });
+  }
+  return groups;
+}
+
+function buildPrevWeekZonePlots(records, entry, usedIds) {
+  const plots = {};
+  let hasData = false;
+
+  for (let slot = 1; slot <= 5; slot += 1) {
+    const lowColumn = zoneColumn(entry.columns, `prev_week_zone${slot}_low`);
+    const highColumn = zoneColumn(entry.columns, `prev_week_zone${slot}_high`);
+    if (!lowColumn || !highColumn) continue;
+    const typeColumn = zoneColumn(entry.columns, `prev_week_zone${slot}_type`);
+
+    for (const [type, band] of typedBandPoints(records, lowColumn, highColumn, typeColumn)) {
+      if (band.low.length === 0) continue;
+      const colors = PREV_WEEK_ZONE_COLORS[type];
+      const id = `prev-week-zone${slot}-${type}`;
+      const lowPlot = `${id}-low`;
+      const highPlot = `${id}-high`;
+      plots[lowPlot] = {
+        data: band.low,
+        options: { style: "step", color: colors.color, linewidth: 1.5 },
+      };
+      plots[highPlot] = {
+        data: band.high,
+        options: { style: "step", color: colors.color, linewidth: 1.5 },
+      };
+      plots[`${id}-fill`] = {
+        data: [],
+        options: { style: "fill", color: colors.fillColor, plot1: lowPlot, plot2: highPlot },
+      };
+      hasData = true;
+    }
+  }
+
+  if (!hasData) return null;
+
+  return {
+    id: uniqueIndicatorId("prev-week-zones", entry, usedIds),
+    plots,
+    addOptions: { overlay: true },
+  };
 }
 
 function buildZonePlots(records, entry, usedIds) {
@@ -217,6 +283,7 @@ function buildLinePlots(records, entry, usedIds, entryTf) {
 }
 
 export function buildIndicator(records, entry, usedIds, entryTf) {
+  if (entry.type === "PREV_WEEK_ZONES") return buildPrevWeekZonePlots(records, entry, usedIds);
   if (ZONES[entry.type]) return buildZonePlots(records, entry, usedIds);
   if (isRegimeType(entry.type)) return buildRegimePlots(records, entry, usedIds);
   if (isCandlestickPattern(entry.type)) return buildPatternPlots(records, entry, usedIds);

@@ -81,3 +81,9 @@ def consolidation_exit(df, i, pos):
     if consolidation[i]:
         return True
     return False
+
+def weekly_zones_entry(df, i):
+    return None, None, None
+
+def weekly_zones_exit(df, i, pos):
+    return False

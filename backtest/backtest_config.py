@@ -1,4 +1,4 @@
-from backtest.backtest_strategies import sr_entry, sr_exit, consolidation_entry, consolidation_exit
+from backtest.backtest_strategies import sr_entry, sr_exit, consolidation_entry, consolidation_exit, weekly_zones_entry, weekly_zones_exit
 from dotenv import load_dotenv
 from pathlib import Path
 import os
@@ -68,28 +68,61 @@ strategies = [
     #         }
     #     }
     # },
+    # {
+    #     "symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD"],
+    #     "name": "market_consolidation",
+    #     "indicators": [
+    #         {
+    #             "indicator": "CONSOLIDATION_HOTSPOT",
+    #             "timeframe": "H1"
+    #         },
+    #         {
+    #             "indicator": "COMBINED_TREND",
+    #             "timeframe": "H1"
+    #         }
+    #     ],
+    #     "timeframes": ["H1"],
+    #     "date_range": "1M",
+    #     "strategy": ("consolidation", consolidation_entry, consolidation_exit),
+    #     "config": {
+    #         "default_config": {
+    #             "sl_type": "atr",
+    #             "atr_multiplier": 2,
+    #             "rrr": 3,
+    #             "entry_tf": "H1",
+    #             "slippage": 2.5
+    #         },
+    #         "risk_config": {
+    #             "starting_balance":      10,
+    #             "currency":              "USD",   # or "NGN"
+    #             "ngn_conversion_rate":   1450,
+    #             "lot_size":              0.02,
+    #             "allow_trading_session": [],  # ["asian", "newyork", "london_newyork_overlap", "london"] = all sessions,
+    #             "daily_dd": 0.05, # in percentage
+    #             "maximum_dd": 0.7, # in percentage
+    #             "trading_days": [], # [] = all trading days
+    #         }
+    #     }
+    # },
     {
         "symbols": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "AUDUSD"],
-        "name": "market_consolidation",
+        "name": "weekly_zones",
         "indicators": [
             {
-                "indicator": "CONSOLIDATION_HOTSPOT",
-                "timeframe": "H1"
+                "indicator": "PREV_WEEK_ZONES",
+                "timeframe": "M15",
+                "params": {"atr_period": 14, "atr_mult": 2.0}
             },
-            {
-                "indicator": "COMBINED_TREND",
-                "timeframe": "H1"
-            }
         ],
-        "timeframes": ["H1"],
-        "date_range": "1M",
-        "strategy": ("consolidation", consolidation_entry, consolidation_exit),
+        "timeframes": ["M15"],
+        "date_range": "3W",
+        "strategy": ("weekly_zones", weekly_zones_entry, weekly_zones_exit),
         "config": {
             "default_config": {
                 "sl_type": "atr",
                 "atr_multiplier": 2,
                 "rrr": 3,
-                "entry_tf": "H1",
+                "entry_tf": "M15",
                 "slippage": 2.5
             },
             "risk_config": {

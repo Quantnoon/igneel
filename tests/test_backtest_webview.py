@@ -99,3 +99,21 @@ def test_session_indicator_configs_use_timeframe_suffixed_columns(tmp_path):
             ("ASIAN_HIGH", "asian_high"), ("ASIAN_LOW", "asian_low"),
         )
     ]
+
+
+def test_prev_week_zones_indicator_config_uses_all_output_columns(tmp_path):
+    webview_dir = tmp_path / "strategies"
+    webview_dir.mkdir()
+    write_webview_resources(
+        webview_dir, ["EURUSD"], ("prev_week", lambda _df, _index: None),
+        {"EURUSD": [{"name": "prev_week", "report": report()}]},
+        {"EURUSD": frame()}, "M15",
+        [{"indicator": "PREV_WEEK_ZONES", "timeframe": "H1"}],
+    )
+    config = json.loads((webview_dir / "prev_week" / "config.json").read_text(encoding="utf-8"))
+    expected = [
+        f"prev_week_zone{slot}_{field}_H1"
+        for slot in range(1, 6)
+        for field in ("low", "high", "type", "source")
+    ] + ["prev_week_high_level_H1", "prev_week_low_level_H1", "prev_week_atr_H1"]
+    assert config["indicators"] == [{"type": "PREV_WEEK_ZONES", "columns": expected}]

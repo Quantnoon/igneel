@@ -240,3 +240,93 @@ test("parseIndicatorConfig filters malformed entries and non-string columns", ()
   assert.deepEqual(parsed, [{ type: "EMA", columns: ["ema_14_H1"] }]);
   assert.deepEqual(parseIndicatorConfig(undefined), []);
 });
+
+function prevWeekZoneRecords() {
+  return [
+    candleRecord(0),
+    candleRecord(1, {
+      prev_week_zone1_low_H1: 10,
+      prev_week_zone1_high_H1: 12,
+      prev_week_zone1_type_H1: "support",
+    }),
+    candleRecord(2, {
+      prev_week_zone1_low_H1: 10,
+      prev_week_zone1_high_H1: 12,
+      prev_week_zone1_type_H1: "support",
+    }),
+    candleRecord(3, {
+      prev_week_zone1_low_H1: 20,
+      prev_week_zone1_high_H1: 22,
+      prev_week_zone1_type_H1: "resistance",
+    }),
+  ];
+}
+
+test("PREV_WEEK_ZONES renders type-colored bands per slot", () => {
+  const columns = [
+    "prev_week_zone1_low_H1",
+    "prev_week_zone1_high_H1",
+    "prev_week_zone1_type_H1",
+    "prev_week_zone1_source_H1",
+  ];
+  const built = buildIndicator(
+    prevWeekZoneRecords(),
+    { type: "PREV_WEEK_ZONES", columns },
+    new Set(),
+    "M15",
+  );
+
+  assert.ok(built);
+  assert.equal(built.id, "prev-week-zones");
+  assert.deepEqual(built.addOptions, { overlay: true });
+
+  const supportLow = built.plots["prev-week-zone1-support-low"];
+  assert.equal(supportLow.options.style, "step");
+  assert.equal(supportLow.options.color, "#2ca02c");
+  assert.deepEqual(supportLow.data, [
+    { time: 1, value: 10 },
+    { time: 2, value: 10 },
+  ]);
+
+  const resistanceLow = built.plots["prev-week-zone1-resistance-low"];
+  assert.equal(resistanceLow.options.style, "step");
+  assert.equal(resistanceLow.options.color, "#d62728");
+  assert.deepEqual(resistanceLow.data, [{ time: 3, value: 20 }]);
+
+  assert.equal(
+    built.plots["prev-week-zone1-support-fill"].options.plot1,
+    "prev-week-zone1-support-low",
+  );
+});
+
+test("PREV_WEEK_ZONES skips missing slots and returns null without data", () => {
+  const built = buildIndicator(
+    [
+      candleRecord(0),
+      candleRecord(1, { prev_week_zone2_low_H1: 5, prev_week_zone2_high_H1: 6 }),
+    ],
+    {
+      type: "PREV_WEEK_ZONES",
+      columns: ["prev_week_zone2_low_H1", "prev_week_zone2_high_H1"],
+    },
+    new Set(),
+    "M15",
+  );
+
+  assert.ok(built);
+  assert.deepEqual(Object.keys(built.plots).sort(), [
+    "prev-week-zone2-neutral-fill",
+    "prev-week-zone2-neutral-high",
+    "prev-week-zone2-neutral-low",
+  ]);
+
+  assert.equal(
+    buildIndicator(
+      [candleRecord(0)],
+      { type: "PREV_WEEK_ZONES", columns: ["prev_week_zone1_low_H1"] },
+      new Set(),
+      "M15",
+    ),
+    null,
+  );
+});
